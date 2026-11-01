@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Oficina Pro — Front-end React + TypeScript
 
 Front-end do **Gerenciador_Oficina** (oficina de caminhões / linha pesada), feito em React 19 + TypeScript + Vite.
@@ -68,3 +69,6 @@ informações no navegador, avisando no rodapé do menu.
 
 Ainda ficam só no navegador (falta entidade no back-end): checklist, pneus, avarias, assinatura,
 prioridade, box, previsão, reclamações detalhadas, diagnóstico, aprovação do orçamento e estoque de peças.
+=======
+# Front_Grenciamento_OfficinaMecanica
+>>>>>>> dbc90d8823e0d63e9d7707b45ff170c5c02bdf94
