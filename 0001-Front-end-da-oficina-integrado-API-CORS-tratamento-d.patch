@@ -1,0 +1,1287 @@
+From cb9b69a5d0480dd0c02a645d6a554ac99ccaf82c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jos=C3=A9=20Lucas?= <lucasluis.ddtank@gmail.com>
+Date: Sat, 31 Oct 2026 21:55:53 -0300
+Subject: [PATCH] =?UTF-8?q?Front-end=20da=20oficina=20integrado=20=C3=A0?=
+ =?UTF-8?q?=20API=20+=20CORS,=20tratamento=20de=20erros=20e=20novos=20endp?=
+ =?UTF-8?q?oints=20de=20OS?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- frontend/index.html: entrada de veículo com checklist, pneus, avarias e assinatura,
+  quadro de OS, defeitos, pátio, estoque, frotas e relatórios; modo demonstração ou API
+- CorsConfig: libera /api/** para o front (README já citava, mas não existia)
+- GlobalExceptionHandler: erros em JSON {erro, data} em vez de 500 com stack trace
+- OS: GET /{id}, GET /{id}/itens, PUT /{id}/status; impede finalizar duas vezes
+- teste.http: exemplos dos novos endpoints
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01225wV6L638p8w1oYxZGCRp
+---
+ frontend/LEIA-ME.md                           |   24 +
+ frontend/index.html                           | 1018 +++++++++++++++++
+ .../oficina/demo/config/CorsConfig.java       |   22 +
+ .../controller/OrdemServicoController.java    |   20 +-
+ .../exception/GlobalExceptionHandler.java     |   44 +
+ .../repository/ItemServicoRepository.java     |    4 +
+ .../demo/service/OrdemServicoService.java     |   26 +
+ .../java/gerenciador/oficina/demo/teste.http  |   16 +-
+ 8 files changed, 1172 insertions(+), 2 deletions(-)
+ create mode 100644 frontend/LEIA-ME.md
+ create mode 100644 frontend/index.html
+ create mode 100644 src/main/java/gerenciador/oficina/demo/config/CorsConfig.java
+ create mode 100644 src/main/java/gerenciador/oficina/demo/exception/GlobalExceptionHandler.java
+
+diff --git a/frontend/LEIA-ME.md b/frontend/LEIA-ME.md
+new file mode 100644
+index 0000000..46fae01
+--- /dev/null
++++ b/frontend/LEIA-ME.md
+@@ -0,0 +1,24 @@
++# Front-end — Oficina Pro (linha pesada)
++
++Página única (HTML + CSS + JS, sem build). Abra `frontend/index.html` direto no navegador.
++
++## Modos
++- **Demonstração**: dados de exemplo salvos no navegador.
++- **API Spring**: no rodapé do menu, clique em "API Spring" e informe `http://localhost:8080`.
++  Requer o back-end rodando com a classe `config/CorsConfig.java`.
++
++## O que vai para a API
++| Ação no front | Endpoint |
++|---|---|
++| Novo cliente | `POST /api/clientes` |
++| Novo funcionário | `POST /api/funcionarios` |
++| Entrada de veículo (veículo novo) | `POST /api/veiculos/{clienteId}` |
++| Abrir OS | `POST /api/ordens-servico` (reclamações viram `defeitoRelatado`, máx. 255 caracteres) |
++| Lançar serviço / peça | `POST /api/ordens-servico/{id}/itens` (peça = descrição `[Peça] 2× Nome (COD)`) |
++| Mudar etapa | `PUT /api/ordens-servico/{id}/status` |
++| Entregar | `PUT /api/ordens-servico/{id}/finalizar` |
++
++## O que ainda fica só no navegador
++Checklist, pneus, avarias, fotos, assinatura, prioridade, box, previsão, reclamações
++detalhadas, diagnóstico, aprovação do orçamento, histórico e estoque de peças.
++Para persistir isso no MySQL, crie as entidades correspondentes (ver sugestões no PR).
+diff --git a/frontend/index.html b/frontend/index.html
+new file mode 100644
+index 0000000..5f5dc9e
+--- /dev/null
++++ b/frontend/index.html
+@@ -0,0 +1,1018 @@
++<!DOCTYPE html>
++<html lang="pt-BR">
++<head>
++<meta charset="UTF-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Gerenciador de Oficina — Linha Pesada</title>
++<link rel="preconnect" href="https://fonts.googleapis.com">
++<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
++<style>
++:root{
++  --bg:#0f1216; --bg2:#151a20; --card:#1b2129; --card2:#222a34; --line:#2c3541; --line2:#3a4553;
++  --tx:#e8edf2; --tx2:#a3afbd; --tx3:#6f7c8b;
++  --ac:#f5b301; --ac2:#ffcc33; --acbg:rgba(245,179,1,.12);
++  --ok:#2fbf71; --okbg:rgba(47,191,113,.13);
++  --warn:#f0a020; --warnbg:rgba(240,160,32,.14);
++  --bad:#ef4f4f; --badbg:rgba(239,79,79,.14);
++  --info:#4aa3ff; --infobg:rgba(74,163,255,.13);
++  --vio:#a77bff; --viobg:rgba(167,123,255,.14);
++  --r:12px; --mono:'JetBrains Mono',ui-monospace,monospace;
++}
++*{box-sizing:border-box}
++html,body{margin:0;height:100%}
++body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px;line-height:1.45}
++a{color:var(--ac)}
++button,input,select,textarea{font:inherit;color:inherit}
++.app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
++/* sidebar */
++.side{background:var(--bg2);border-right:1px solid var(--line);padding:18px 12px;position:sticky;top:0;height:100vh;overflow:auto;display:flex;flex-direction:column;gap:4px}
++.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 18px}
++.brand .logo{width:38px;height:38px;border-radius:10px;background:var(--ac);display:grid;place-items:center;color:#111}
++.brand b{display:block;font-size:15px;letter-spacing:.2px}
++.brand small{color:var(--tx3);font-size:11.5px}
++.nav a{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;color:var(--tx2);text-decoration:none;font-weight:500}
++.nav a:hover{background:var(--card);color:var(--tx)}
++.nav a.on{background:var(--acbg);color:var(--ac2)}
++.nav a svg{width:18px;height:18px;flex:none}
++.nav .cnt{margin-left:auto;background:var(--card2);color:var(--tx2);font-size:11px;padding:1px 7px;border-radius:20px}
++.nav a.on .cnt{background:var(--ac);color:#111}
++.side .sep{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:var(--tx3);padding:14px 10px 4px}
++.side .foot{margin-top:auto;padding:10px;font-size:11.5px;color:var(--tx3)}
++/* main */
++main{padding:22px 28px 60px;min-width:0}
++.top{display:flex;align-items:center;gap:14px;margin-bottom:20px;flex-wrap:wrap}
++.top h1{font-size:22px;margin:0;font-weight:800;letter-spacing:-.3px}
++.top .sub{color:var(--tx3);font-size:13px}
++.top .sp{flex:1}
++.btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line2);background:var(--card2);padding:8px 13px;border-radius:9px;cursor:pointer;font-weight:600;font-size:13px;white-space:nowrap;text-decoration:none;color:var(--tx)}
++.btn:hover{border-color:var(--tx3)}
++.btn.pri{background:var(--ac);color:#141414;border-color:var(--ac)}
++.btn.pri:hover{background:var(--ac2)}
++.btn.ghost{background:transparent}
++.btn.sm{padding:5px 9px;font-size:12px;border-radius:7px}
++.btn.danger{color:var(--bad)}
++.btn svg{width:16px;height:16px}
++.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px}
++.card h3{margin:0 0 12px;font-size:14.5px;font-weight:700;display:flex;align-items:center;gap:8px}
++.card h3 .sp{flex:1}
++.grid{display:grid;gap:14px}
++.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
++.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
++.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
++.g21{grid-template-columns:2fr 1fr}
++@media(max-width:1100px){.g4{grid-template-columns:repeat(2,1fr)}.g3,.g21{grid-template-columns:1fr}}
++@media(max-width:760px){.app{grid-template-columns:1fr}.side{position:static;height:auto;flex-direction:row;overflow-x:auto;padding:8px}.side .sep,.side .foot,.brand small{display:none}.brand{padding:0 8px}.nav{display:flex}.nav a span.l{display:none}.g2{grid-template-columns:1fr}main{padding:16px}}
++.kpi{position:relative;overflow:hidden}
++.kpi .lb{color:var(--tx2);font-size:12.5px;font-weight:500}
++.kpi .vl{font-size:28px;font-weight:800;margin-top:4px;letter-spacing:-.5px}
++.kpi .ft{font-size:12px;color:var(--tx3);margin-top:2px}
++.kpi .ic{position:absolute;right:14px;top:14px;width:34px;height:34px;border-radius:9px;display:grid;place-items:center}
++.kpi .ic svg{width:18px;height:18px}
++.tag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:20px;background:var(--card2);color:var(--tx2);white-space:nowrap}
++.tag.ok{background:var(--okbg);color:var(--ok)} .tag.warn{background:var(--warnbg);color:var(--warn)}
++.tag.bad{background:var(--badbg);color:var(--bad)} .tag.info{background:var(--infobg);color:var(--info)}
++.tag.ac{background:var(--acbg);color:var(--ac)} .tag.vio{background:var(--viobg);color:var(--vio)}
++.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
++.placa{font-family:var(--mono);font-weight:700;background:#f2f4f6;color:#111;border-radius:5px;padding:1px 7px;font-size:12.5px;letter-spacing:1px;border-top:4px solid #1f4aa8;display:inline-block;line-height:1.3}
++.mono{font-family:var(--mono)}
++.muted{color:var(--tx3)} .tx2{color:var(--tx2)}
++.row{display:flex;align-items:center;gap:10px}
++.row.wrap{flex-wrap:wrap}
++.sp{flex:1}
++table{width:100%;border-collapse:collapse}
++th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx3);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line)}
++td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}
++tr.click{cursor:pointer} tr.click:hover td{background:var(--card2)}
++.tbl{overflow:auto}
++/* forms */
++label.f{display:flex;flex-direction:column;gap:5px;font-size:12.5px;color:var(--tx2);font-weight:500}
++.in,select.in,textarea.in{background:var(--bg2);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;outline:none;width:100%;color:var(--tx)}
++.in:focus{border-color:var(--ac)}
++textarea.in{resize:vertical;min-height:70px}
++.fg{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
++.fg .w2{grid-column:span 2}
++.fg .wf{grid-column:1/-1}
++.seg{display:inline-flex;background:var(--bg2);border:1px solid var(--line2);border-radius:9px;padding:3px;gap:2px;flex-wrap:wrap}
++.seg button{border:0;background:transparent;padding:5px 10px;border-radius:7px;cursor:pointer;font-size:12.5px;color:var(--tx2);font-weight:600}
++.seg button.on{background:var(--card2);color:var(--tx);box-shadow:0 0 0 1px var(--line2)}
++/* wizard */
++.steps{display:flex;gap:6px;margin-bottom:18px;overflow-x:auto;padding-bottom:4px}
++.steps .st{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--tx3);font-weight:600;font-size:12.5px;cursor:pointer;white-space:nowrap}
++.steps .st .n{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--card2);font-size:11.5px}
++.steps .st.on{border-color:var(--ac);color:var(--tx)} .steps .st.on .n{background:var(--ac);color:#111}
++.steps .st.done .n{background:var(--ok);color:#06210f}
++.wfoot{display:flex;gap:10px;margin-top:18px;justify-content:flex-end}
++/* checklist */
++.ckgrp{margin-bottom:16px}
++.ckgrp h4{margin:0 0 8px;font-size:12.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--ac)}
++.ck{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:7px 10px;border-radius:8px;background:var(--bg2);margin-bottom:5px}
++.ck .seg button.on[data-v="OK"]{background:var(--okbg);color:var(--ok)}
++.ck .seg button.on[data-v="Atenção"]{background:var(--warnbg);color:var(--warn)}
++.ck .seg button.on[data-v="Avaria"]{background:var(--badbg);color:var(--bad)}
++.ck .seg button.on[data-v="N/A"]{background:var(--card2);color:var(--tx2)}
++.ck .obs{grid-column:1/-1}
++/* tires */
++.tiremap{display:flex;flex-direction:column;align-items:center;gap:18px;padding:10px}
++.axle{display:flex;align-items:center;gap:8px;position:relative}
++.axle .bar{width:120px;height:6px;background:var(--line2);border-radius:3px}
++.axle .lbl{position:absolute;left:-90px;font-size:11.5px;color:var(--tx3);width:80px;text-align:right}
++.tire{width:46px;height:78px;border-radius:9px;border:2px solid var(--line2);background:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;font-family:var(--mono);font-size:12px;font-weight:700;gap:2px;transition:.15s}
++.tire small{font-size:9.5px;color:var(--tx3);font-family:Inter}
++.tire:hover{transform:translateY(-2px)}
++.tire.g{border-color:var(--ok);color:var(--ok)} .tire.y{border-color:var(--warn);color:var(--warn)} .tire.r{border-color:var(--bad);color:var(--bad)}
++.tire.sel{box-shadow:0 0 0 3px var(--ac)}
++.cab{width:150px;height:46px;border-radius:14px 14px 4px 4px;background:var(--card2);border:1px solid var(--line2);display:grid;place-items:center;font-size:11px;color:var(--tx3);letter-spacing:1px}
++/* damage */
++.dmg-wrap{position:relative;background:var(--bg2);border:1px dashed var(--line2);border-radius:10px;padding:8px}
++.dmg-wrap svg{width:100%;height:auto;display:block;cursor:crosshair}
++.fuel{display:flex;gap:3px}
++.fuel i{flex:1;height:18px;border-radius:3px;background:var(--card2);cursor:pointer}
++.fuel i.on{background:var(--ac)}
++.fuel i.on.low{background:var(--bad)}
++.photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px}
++.photos .ph{position:relative;aspect-ratio:4/3;border-radius:8px;overflow:hidden;background:var(--bg2);border:1px solid var(--line)}
++.photos .ph img{width:100%;height:100%;object-fit:cover}
++.photos .ph button{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);border:0;border-radius:6px;color:#fff;cursor:pointer;padding:2px 6px}
++.drop{border:2px dashed var(--line2);border-radius:10px;padding:18px;text-align:center;color:var(--tx3);cursor:pointer;display:block}
++.drop:hover{border-color:var(--ac);color:var(--tx2)}
++canvas.sig{width:100%;height:150px;background:#f6f7f8;border-radius:10px;touch-action:none;cursor:crosshair}
++/* kanban */
++.kanban{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(250px,1fr);gap:12px;overflow-x:auto;padding-bottom:10px;align-items:start}
++.col{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:10px;min-height:200px}
++.col.over{border-color:var(--ac);background:var(--acbg)}
++.col h4{margin:2px 4px 10px;font-size:12.5px;display:flex;align-items:center;gap:7px}
++.col h4 .c{margin-left:auto;color:var(--tx3);font-weight:600}
++.oc{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 11px;margin-bottom:8px;cursor:pointer;border-left:3px solid var(--line2)}
++.oc:hover{border-color:var(--line2)}
++.oc.p-Crítica{border-left-color:var(--bad)} .oc.p-Alta{border-left-color:var(--warn)} .oc.p-Normal{border-left-color:var(--info)} .oc.p-Baixa{border-left-color:var(--tx3)}
++.oc .t{font-weight:700;font-size:13px;margin:6px 0 3px}
++.oc .d{font-size:12px;color:var(--tx2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
++.oc .m{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;font-size:11.5px;color:var(--tx3)}
++.oc[draggable=true]{cursor:grab}
++/* modal */
++.ov{position:fixed;inset:0;background:rgba(5,7,10,.66);z-index:50;display:flex;justify-content:flex-end}
++.ov.center{justify-content:center;align-items:center}
++.drawer{width:min(920px,100%);height:100%;background:var(--bg);border-left:1px solid var(--line);overflow:auto;padding:22px 24px 40px;animation:sl .18s ease}
++.dlg{width:min(520px,94vw);background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:20px;max-height:90vh;overflow:auto}
++@keyframes sl{from{transform:translateX(30px);opacity:.4}to{transform:none;opacity:1}}
++.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:16px 0;overflow-x:auto}
++.tabs button{background:none;border:0;padding:9px 13px;cursor:pointer;color:var(--tx3);font-weight:600;border-bottom:2px solid transparent;white-space:nowrap}
++.tabs button.on{color:var(--tx);border-color:var(--ac)}
++.tl{border-left:2px solid var(--line2);margin-left:6px;padding-left:16px}
++.tl .it{position:relative;padding-bottom:14px}
++.tl .it::before{content:"";position:absolute;left:-22px;top:4px;width:10px;height:10px;border-radius:50%;background:var(--ac);border:2px solid var(--bg)}
++.tl .it small{color:var(--tx3);display:block;font-size:11.5px}
++.sum{display:flex;justify-content:space-between;padding:6px 0;color:var(--tx2)}
++.sum.tot{font-size:17px;font-weight:800;color:var(--tx);border-top:1px solid var(--line);margin-top:6px;padding-top:10px}
++.box{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--card);min-height:130px;display:flex;flex-direction:column;gap:6px}
++.box.free{border-style:dashed;background:transparent;color:var(--tx3);align-items:center;justify-content:center}
++.box .hd{display:flex;align-items:center;gap:8px;font-weight:700}
++.bars .b{display:grid;grid-template-columns:150px 1fr 44px;gap:10px;align-items:center;margin-bottom:8px;font-size:12.5px}
++.bars .tr{height:10px;background:var(--bg2);border-radius:5px;overflow:hidden}
++.bars .fl{height:100%;background:var(--ac);border-radius:5px}
++.alert{display:flex;gap:10px;padding:10px 12px;border-radius:9px;background:var(--bg2);border:1px solid var(--line);margin-bottom:7px;align-items:flex-start;font-size:13px}
++.alert .ic{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;flex:none}
++.alert .ic svg{width:15px;height:15px}
++.empty{color:var(--tx3);text-align:center;padding:28px 10px;font-size:13px}
++#toasts{position:fixed;bottom:18px;right:18px;z-index:99;display:flex;flex-direction:column;gap:8px}
++.toast{background:var(--card2);border:1px solid var(--line2);border-left:3px solid var(--ac);padding:10px 14px;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.4);animation:sl .2s;max-width:340px}
++.search{position:relative}
++.search input{padding-left:32px;width:260px}
++.search svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);width:15px;height:15px;color:var(--tx3)}
++.prog{height:6px;background:var(--bg2);border-radius:3px;overflow:hidden}
++.prog i{display:block;height:100%;background:var(--ok)}
++hr.s{border:0;border-top:1px solid var(--line);margin:14px 0}
++.chip-x{background:none;border:0;color:var(--tx3);cursor:pointer;padding:0 2px}
++</style>
++</head>
++<body>
++<div class="app">
++  <aside class="side">
++    <div class="brand">
++      <div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg></div>
++      <div><b>Oficina Pro</b><small>Linha pesada · Diesel</small></div>
++    </div>
++    <nav class="nav" id="nav"></nav>
++    <div class="foot" id="foot"></div>
++  </aside>
++  <main id="view"></main>
++</div>
++<div id="modal"></div>
++<div id="toasts"></div>
++
++<script>
++/* ============ ÍCONES ============ */
++const I = {
++  painel:'<path d="M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 3v6h8V3z"/>',
++  entrada:'<path d="M10 17h4V5H2v12h3"/><path d="M20 17h2v-3.3a1 1 0 0 0-.2-.6L18.5 9H14v8h1"/><circle cx="7.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
++  os:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v10M12 7v6M16 7v8"/>',
++  defeitos:'<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
++  patio:'<path d="M3 21V8l9-5 9 5v13"/><path d="M7 21v-8h10v8M7 17h10"/>',
++  estoque:'<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
++  frotas:'<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',
++  relatorios:'<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>',
++  plus:'<path d="M12 5v14M5 12h14"/>',
++  search:'<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
++  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
++  check:'<path d="M20 6 9 17l-5-5"/>',
++  wrench:'<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
++  box:'<path d="M21 8 12 3 3 8v8l9 5 9-5z"/>',
++  money:'<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',
++  x:'<path d="M18 6 6 18M6 6l12 12"/>',
++  copy:'<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
++  cal:'<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
++  user:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
++  repeat:'<path d="m17 1 4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
++};
++const ic = (n, s='') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${s}>${I[n]||''}</svg>`;
++
++/* ============ CONSTANTES DE DOMÍNIO ============ */
++const STATUS = ['Aguardando diagnóstico','Em diagnóstico','Aguardando aprovação','Aguardando peças','Em execução','Controle de qualidade','Pronto p/ retirada','Entregue'];
++const ST_COR = {'Aguardando diagnóstico':'var(--tx3)','Em diagnóstico':'var(--info)','Aguardando aprovação':'var(--vio)','Aguardando peças':'var(--warn)','Em execução':'var(--ac)','Controle de qualidade':'#38c6c6','Pronto p/ retirada':'var(--ok)','Entregue':'var(--tx3)'};
++const PRIOR = ['Baixa','Normal','Alta','Crítica'];
++const TIPOS_OS = ['Corretiva','Preventiva','Garantia / Retorno','Socorro / Guincho','Revisão de concessionária','Inspeção / Laudo'];
++const SISTEMAS = ['Motor','Injeção / Pós-tratamento (ARLA)','Arrefecimento','Freios / Pneumático','Suspensão','Direção','Transmissão / Embreagem','Diferencial / Eixos','Elétrica / Eletrônica','Cabine / Carroceria','Pneus / Rodas','Quinta roda / Engate','Ar-condicionado','Implemento / Carreta'];
++const SEVER = ['Baixa','Média','Alta','Crítica (imobiliza)'];
++const QUANDO = ['Sempre','Motor frio','Motor quente','Em carga / subida','Em alta velocidade','Ao frear','Ao fazer curvas','Em marcha lenta','Intermitente'];
++const TIPOS_VEIC = ['Cavalo mecânico 4x2','Cavalo mecânico 6x2','Cavalo mecânico 6x4','Truck 6x2','Toco 4x2','Bitruck 8x2','Ônibus','Semirreboque / Carreta','Van / Utilitário'];
++const AVARIAS = ['Amassado','Risco','Trinca','Quebrado','Ferrugem','Faltando','Vazamento'];
++const AV_COR = {Amassado:'#f0a020',Risco:'#4aa3ff',Trinca:'#ef4f4f',Quebrado:'#ef4f4f',Ferrugem:'#b9773a',Faltando:'#a77bff',Vazamento:'#2fbf71'};
++const CHECK = {
++  'Cabine e painel':['Luzes de alerta no painel','Tacógrafo (disco/digital)','Buzina','Limpador e lavador','Retrovisores','Cintos de segurança','Para-brisa e vidros','Bancos e estofamento','Ar-condicionado'],
++  'Iluminação e sinalização':['Faróis (baixo/alto)','Lanternas','Setas e pisca-alerta','Luz de freio','Luz de ré e alarme sonoro','Faixas refletivas'],
++  'Motor e fluidos':['Nível do óleo do motor','Líquido de arrefecimento','Vazamentos aparentes','Correias e polias','Nível de ARLA 32','Indicador do filtro de ar','Fluido da direção hidráulica'],
++  'Freios e sistema pneumático':['Pressão de ar (manômetros)','Drenagem dos reservatórios','Freio de estacionamento','Mangueiras e engates (cuíca)','Lonas / pastilhas (visual)'],
++  'Chassi e suspensão':['Feixes de molas','Bolsas de ar','Amortecedores','Quinta roda / pino-rei','Para-lamas e para-barro','Para-choque e protetor lateral'],
++  'Itens obrigatórios / pertences':['Extintor (dentro da validade)','Triângulo','Macaco','Chave de roda','Estepe','CRLV / documentos','Cartão do tacógrafo'],
++};
++const PNEU_CFG = {
++  '4x2':[['Dianteiro',['E','D']],['Tração',['EE','EI','DI','DE']]],
++  '6x2':[['Dianteiro',['E','D']],['Tração',['EE','EI','DI','DE']],['Auxiliar',['EE','EI','DI','DE']]],
++  '6x4':[['Dianteiro',['E','D']],['Tração 1',['EE','EI','DI','DE']],['Tração 2',['EE','EI','DI','DE']]],
++  '8x2':[['Dianteiro 1',['E','D']],['Dianteiro 2',['E','D']],['Tração',['EE','EI','DI','DE']],['Auxiliar',['EE','EI','DI','DE']]],
++  'Carreta 3 eixos':[['Eixo 1',['EE','EI','DI','DE']],['Eixo 2',['EE','EI','DI','DE']],['Eixo 3',['EE','EI','DI','DE']]],
++};
++const cfgDoTipo = t => /6x4/.test(t)?'6x4':/8x2|Bitruck/.test(t)?'8x2':/6x2|Truck/.test(t)?'6x2':/Carreta|Semirreboque/.test(t)?'Carreta 3 eixos':'4x2';
++
++/* ============ UTIL ============ */
++const $ = s => document.querySelector(s);
++const esc = s => String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
++const brl = v => (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
++const num = v => (Number(v)||0).toLocaleString('pt-BR');
++const uid = () => Math.random().toString(36).slice(2,10);
++const now = () => new Date().toISOString();
++const fdt = d => d? new Date(d).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
++const fd = d => d? new Date(d).toLocaleDateString('pt-BR'):'—';
++const horasDesde = d => Math.max(0,(Date.now()-new Date(d))/36e5);
++const dur = h => h<24? `${Math.round(h)}h` : `${Math.floor(h/24)}d ${Math.round(h%24)}h`;
++const dAgo = (days,h=0) => new Date(Date.now()-days*864e5-h*36e5).toISOString();
++const dFwd = (days,h=0) => new Date(Date.now()+days*864e5+h*36e5).toISOString();
++function setPath(o,p,v){const k=p.split('.');let c=o;for(let i=0;i<k.length-1;i++){c[k[i]]??={};c=c[k[i]]}c[k.at(-1)]=v}
++function getPath(o,p){return p.split('.').reduce((a,k)=>a?.[k],o)}
++function toast(m){const t=document.createElement('div');t.className='toast';t.innerHTML=m;$('#toasts').appendChild(t);setTimeout(()=>t.remove(),3200)}
++const tagSt = s => `<span class="tag" style="color:${ST_COR[s]};background:color-mix(in srgb, ${ST_COR[s]} 14%, transparent)"><span class="dot" style="background:${ST_COR[s]}"></span>${esc(s)}</span>`;
++const tagPr = p => `<span class="tag ${p==='Crítica'?'bad':p==='Alta'?'warn':p==='Normal'?'info':''}">${esc(p)}</span>`;
++const tagSev = s => `<span class="tag ${/Crít/.test(s)?'bad':s==='Alta'?'warn':s==='Média'?'ac':''}">${esc(s)}</span>`;
++
++/* ============ ESTADO ============ */
++const KEY='oficina-pro-v1';
++let S;
++function seed(){
++  const mec=[{id:'m1',nome:'Carlos Mendes',esp:'Motor / Injeção',valorHora:180},{id:'m2',nome:'Rafael Souza',esp:'Freios / Suspensão',valorHora:150},{id:'m3',nome:'Anderson Lima',esp:'Elétrica / Diagnóstico',valorHora:190},{id:'m4',nome:'Paulo Henrique',esp:'Transmissão / Diferencial',valorHora:170},{id:'m5',nome:'Diego Rocha',esp:'Funilaria / Geral',valorHora:120}];
++  const cli=[
++    {id:'c1',nome:'Transportadora Rota Sul Ltda',doc:'12.345.678/0001-90',tel:'(51) 3333-4400',contato:'Marcos (frota)',tipo:'Frotista',prazo:'28 dias'},
++    {id:'c2',nome:'Agro Cerrado Logística',doc:'98.765.432/0001-10',tel:'(64) 3621-8800',contato:'Juliana (manutenção)',tipo:'Frotista',prazo:'21 dias'},
++    {id:'c3',nome:'José Ferreira da Silva',doc:'123.456.789-00',tel:'(11) 98888-1234',contato:'Próprio',tipo:'Autônomo',prazo:'À vista'},
++  ];
++  const vei=[
++    {id:'v1',placa:'RST4A21',frota:'RS-031',clienteId:'c1',tipo:'Cavalo mecânico 6x2',marca:'Scania',modelo:'R 450',ano:2021,chassi:'9BSR6X200M3912345',km:412300,ultRevKm:400000,intRev:40000},
++    {id:'v2',placa:'QAZ7B88',frota:'RS-044',clienteId:'c1',tipo:'Cavalo mecânico 6x4',marca:'Volvo',modelo:'FH 540',ano:2022,chassi:'9BVAG30D0NE776655',km:288900,ultRevKm:250000,intRev:40000},
++    {id:'v3',placa:'GOI2C45',frota:'AC-12',clienteId:'c2',tipo:'Cavalo mecânico 6x4',marca:'Mercedes-Benz',modelo:'Actros 2651',ano:2020,chassi:'9BM963404LB112233',km:530120,ultRevKm:520000,intRev:30000},
++    {id:'v4',placa:'GOI9D10',frota:'AC-27',clienteId:'c2',tipo:'Truck 6x2',marca:'Volkswagen',modelo:'Constellation 24.280',ano:2019,chassi:'9532N8247KR445566',km:615400,ultRevKm:590000,intRev:25000},
++    {id:'v5',placa:'FJS3E77',frota:'',clienteId:'c3',tipo:'Toco 4x2',marca:'Iveco',modelo:'Tector 11-190',ano:2017,chassi:'93ZA1RFH0H8998877',km:701500,ultRevKm:690000,intRev:20000},
++  ];
++  const pec=[
++    {id:'p1',cod:'SC-1873016',desc:'Filtro de óleo lubrificante',apl:'Scania DC13',qtd:14,min:6,custo:98,venda:165},
++    {id:'p2',cod:'VO-21479',desc:'Lona de freio (jogo eixo)',apl:'Volvo FH',qtd:3,min:4,custo:420,venda:690},
++    {id:'p3',cod:'MB-A0004',desc:'Bolsa de ar suspensão traseira',apl:'Actros',qtd:2,min:2,custo:780,venda:1190},
++    {id:'p4',cod:'UNI-ARLA20',desc:'ARLA 32 (balde 20 L)',apl:'Universal',qtd:22,min:10,custo:62,venda:95},
++    {id:'p5',cod:'UNI-15W40',desc:'Óleo motor 15W40 CK-4 (litro)',apl:'Universal diesel',qtd:180,min:80,custo:24,venda:39},
++    {id:'p6',cod:'VW-KIT-EMB',desc:'Kit de embreagem 430 mm',apl:'Constellation',qtd:1,min:1,custo:3900,venda:5650},
++    {id:'p7',cod:'BOS-0445',desc:'Bico injetor common rail',apl:'Cummins ISL / MWM',qtd:0,min:2,custo:1850,venda:2790},
++    {id:'p8',cod:'UNI-LAMP-H7',desc:'Lâmpada H7 24V',apl:'Universal',qtd:30,min:10,custo:14,venda:29},
++    {id:'p9',cod:'WAB-VALV',desc:'Válvula relé de freio',apl:'Wabco',qtd:4,min:2,custo:540,venda:860},
++    {id:'p10',cod:'SC-SENS-NOX',desc:'Sensor NOx',apl:'Scania Euro 6',qtd:1,min:1,custo:2600,venda:3890},
++  ];
++  const baseEntrada = (km,comb)=>({km,horimetro:'',combustivel:comb,motorista:'',checklist:{},pneus:{},avarias:[],fotos:[],obs:'',assinatura:null,pertences:''});
++  const os=[
++    {id:'o1',num:1041,veiculoId:'v1',clienteId:'c1',tipo:'Corretiva',status:'Em execução',prioridade:'Alta',box:'Box 2',entrada:{...baseEntrada(412300,5),motorista:'Gilmar Pereira'},abertura:dAgo(1,5),previsao:dFwd(0,6),
++      reclamacoes:[{id:uid(),texto:'Perda de potência em subida e luz de anomalia acesa no painel',sistema:'Injeção / Pós-tratamento (ARLA)',quando:'Em carga / subida',sev:'Alta',dtc:'P20EE, P2BAD',status:'Diagnosticada',causa:'Sensor NOx de saída com leitura incoerente',data:dAgo(1,5)}],
++      diagnostico:'Scanner indicou falha de eficiência do SCR. Teste de dosagem OK. Sensor NOx pós-catalisador com sinal travado.',
++      servicos:[{id:uid(),desc:'Diagnóstico eletrônico com scanner',sistema:'Elétrica / Eletrônica',horas:1.5,mecId:'m3',feito:true},{id:uid(),desc:'Substituição do sensor NOx',sistema:'Injeção / Pós-tratamento (ARLA)',horas:2,mecId:'m1',feito:false}],
++      pecas:[{pecaId:'p10',qtd:1,valor:3890}],aprovado:{data:dAgo(0,20),por:'Marcos (frota) — WhatsApp'},hist:[{d:dAgo(1,5),t:'Veículo recebido na recepção'},{d:dAgo(1,3),t:'Diagnóstico iniciado — Anderson'},{d:dAgo(0,22),t:'Orçamento enviado ao cliente'},{d:dAgo(0,20),t:'Orçamento aprovado'}]},
++    {id:'o2',num:1042,veiculoId:'v3',clienteId:'c2',tipo:'Corretiva',status:'Aguardando peças',prioridade:'Crítica',box:'Box 4',entrada:{...baseEntrada(530120,3),motorista:'Edson Batista'},abertura:dAgo(2,2),previsao:dFwd(1),
++      reclamacoes:[{id:uid(),texto:'Veículo arriando do lado esquerdo traseiro, alarme de pressão baixa',sistema:'Suspensão',quando:'Sempre',sev:'Crítica (imobiliza)',dtc:'',status:'Diagnosticada',causa:'Bolsa de ar furada no 2º eixo LE',data:dAgo(2,2)},
++        {id:uid(),texto:'Ruído metálico ao frear em baixa velocidade',sistema:'Freios / Pneumático',quando:'Ao frear',sev:'Média',dtc:'',status:'Aberta',causa:'',data:dAgo(2,2)}],
++      diagnostico:'Bolsa de ar traseira LE rompida. Aguardando 2ª unidade do fornecedor para trocar o par.',
++      servicos:[{id:uid(),desc:'Troca de bolsas de ar (par) 2º eixo',sistema:'Suspensão',horas:3,mecId:'m2',feito:false}],
++      pecas:[{pecaId:'p3',qtd:2,valor:1190}],aprovado:{data:dAgo(1,10),por:'Juliana — e-mail'},hist:[{d:dAgo(2,2),t:'Chegada via guincho'},{d:dAgo(1,12),t:'Orçamento enviado'},{d:dAgo(1,10),t:'Aprovado'},{d:dAgo(1,9),t:'Pedido de peça ao fornecedor (prazo 48h)'}]},
++    {id:'o3',num:1043,veiculoId:'v2',clienteId:'c1',tipo:'Preventiva',status:'Aguardando aprovação',prioridade:'Normal',box:'Box 1',entrada:{...baseEntrada(288900,6),motorista:'Luiz Carlos'},abertura:dAgo(0,9),previsao:dFwd(1),
++      reclamacoes:[{id:uid(),texto:'Revisão de 40.000 km + verificar freio puxando para a direita',sistema:'Freios / Pneumático',quando:'Ao frear',sev:'Média',dtc:'',status:'Diagnosticada',causa:'Lonas do eixo de tração no limite',data:dAgo(0,9)}],
++      diagnostico:'Revisão programada. Lonas de freio com 3 mm. Recomendada troca do jogo do eixo de tração.',
++      servicos:[{id:uid(),desc:'Revisão 40.000 km (troca de óleo e filtros)',sistema:'Motor',horas:3,mecId:'m1',feito:false},{id:uid(),desc:'Substituição de lonas de freio — tração',sistema:'Freios / Pneumático',horas:4,mecId:'m2',feito:false}],
++      pecas:[{pecaId:'p5',qtd:38,valor:39},{pecaId:'p2',qtd:1,valor:690}],aprovado:null,hist:[{d:dAgo(0,9),t:'Veículo recebido'},{d:dAgo(0,4),t:'Orçamento enviado ao cliente'}]},
++    {id:'o4',num:1044,veiculoId:'v4',clienteId:'c2',tipo:'Garantia / Retorno',status:'Em diagnóstico',prioridade:'Alta',box:'Box 3',entrada:{...baseEntrada(615400,4),motorista:'Wellington'},abertura:dAgo(0,4),previsao:dFwd(0,10),retornoDe:1029,
++      reclamacoes:[{id:uid(),texto:'Embreagem patinando novamente — trocada há 25 dias nesta oficina',sistema:'Transmissão / Embreagem',quando:'Em carga / subida',sev:'Alta',dtc:'',status:'Aberta',causa:'',data:dAgo(0,4)}],
++      diagnostico:'',servicos:[],pecas:[],aprovado:null,hist:[{d:dAgo(0,4),t:'Retorno em garantia da OS #1029'}]},
++    {id:'o5',num:1045,veiculoId:'v5',clienteId:'c3',tipo:'Corretiva',status:'Aguardando diagnóstico',prioridade:'Normal',box:'Pátio',entrada:{...baseEntrada(701500,2),motorista:'José Ferreira'},abertura:dAgo(0,1),previsao:dFwd(2),
++      reclamacoes:[{id:uid(),texto:'Fumaça preta e falha na partida a frio',sistema:'Motor',quando:'Motor frio',sev:'Média',dtc:'',status:'Aberta',causa:'',data:dAgo(0,1)}],
++      diagnostico:'',servicos:[],pecas:[],aprovado:null,hist:[{d:dAgo(0,1),t:'Veículo recebido'}]},
++    {id:'o6',num:1040,veiculoId:'v1',clienteId:'c1',tipo:'Preventiva',status:'Pronto p/ retirada',prioridade:'Normal',box:'Box 5',entrada:{...baseEntrada(400010,7)},abertura:dAgo(3),previsao:dAgo(0,3),
++      reclamacoes:[{id:uid(),texto:'Revisão de 400.000 km',sistema:'Motor',quando:'Sempre',sev:'Baixa',dtc:'',status:'Resolvida',causa:'—',data:dAgo(3)}],
++      diagnostico:'Revisão concluída.',servicos:[{id:uid(),desc:'Revisão completa 400.000 km',sistema:'Motor',horas:6,mecId:'m1',feito:true}],pecas:[{pecaId:'p1',qtd:2,valor:165},{pecaId:'p5',qtd:40,valor:39}],aprovado:{data:dAgo(3),por:'Contrato de preventiva'},hist:[{d:dAgo(3),t:'Recebido'},{d:dAgo(0,3),t:'Teste de rodagem aprovado — pronto'}]},
++    {id:'o7',num:1029,veiculoId:'v4',clienteId:'c2',tipo:'Corretiva',status:'Entregue',prioridade:'Normal',box:'',entrada:{...baseEntrada(598000,4)},abertura:dAgo(27),previsao:dAgo(25),entregue:dAgo(25),
++      reclamacoes:[{id:uid(),texto:'Embreagem patinando',sistema:'Transmissão / Embreagem',quando:'Em carga / subida',sev:'Alta',dtc:'',status:'Resolvida',causa:'Disco gasto',data:dAgo(27)}],
++      diagnostico:'Kit de embreagem substituído.',servicos:[{id:uid(),desc:'Troca do kit de embreagem',sistema:'Transmissão / Embreagem',horas:8,mecId:'m4',feito:true}],pecas:[{pecaId:'p6',qtd:1,valor:5650}],aprovado:{data:dAgo(27),por:'Juliana'},hist:[{d:dAgo(27),t:'Recebido'},{d:dAgo(25),t:'Entregue'}]},
++  ];
++  return {mec,cli,vei,pec,os,boxes:['Box 1','Box 2','Box 3','Box 4','Box 5','Box 6 (valeta)','Box 7 (elétrica)','Rampa de lavagem'],seq:1046};
++}
++function lsGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
++function lsSet(k,v){try{localStorage.setItem(k,v);return true}catch(e){return false}}
++function load(){try{const r=lsGet(KEY);return r?JSON.parse(r):null}catch(e){return null}}
++function save(){
++  if(MODE==='api') return saveExtras();
++  if(!lsSet(KEY,JSON.stringify(S))) toast('⚠️ Não foi possível salvar no navegador (espaço cheio?). Remova algumas fotos.');
++}
++
++/* ============ INTEGRAÇÃO COM A API SPRING BOOT (Gerenciador_Oficina) ============
++   Endpoints usados:
++     GET/POST /api/clientes            GET/POST /api/funcionarios
++     GET /api/veiculos                 POST /api/veiculos/{clienteId}
++     GET/POST /api/ordens-servico      POST /api/ordens-servico/{id}/itens
++     PUT /api/ordens-servico/{id}/finalizar
++     (novos) GET /api/ordens-servico/{id}/itens · PUT /api/ordens-servico/{id}/status
++   O que a API ainda não guarda (checklist, pneus, avarias, fotos, prioridade, box,
++   reclamações detalhadas, estoque) fica salvo no navegador, ligado ao id da OS. */
++let MODE = lsGet('oficina-modo')||'demo';
++let API_URL = lsGet('oficina-api')||'http://localhost:8080';
++let API_ERR = null, API_NOVO = true; // API_NOVO = back-end tem os endpoints novos (/itens e /status)
++const XKEY='oficina-pro-extra';
++let X = (()=>{try{return JSON.parse(lsGet(XKEY))||null}catch(e){return null}})() || {os:{},vei:{},mec:{},cli:{},pec:null};
++const ENUM_OF = s => s==='Entregue'?'FINALIZADA':s==='Aguardando peças'?'AGUARDANDO_PECA':['Em execução','Controle de qualidade','Pronto p/ retirada'].includes(s)?'EM_ANDAMENTO':'ABERTA';
++const DO_ENUM = {ABERTA:'Aguardando diagnóstico',EM_ANDAMENTO:'Em execução',AGUARDANDO_PECA:'Aguardando peças',FINALIZADA:'Entregue'};
++const normPlaca = p => String(p||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
++const apiId = id => Number(String(id).replace(/^[a-z]+/,''));
++
++async function api(path,opt={}){
++  let r;
++  try{ r=await fetch(API_URL.replace(/\/$/,'')+path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})},body:opt.body?JSON.stringify(opt.body):undefined}); }
++  catch(e){ throw new Error(`Sem resposta de ${API_URL}. O back-end está rodando? O CORS está liberado?`) }
++  const txt=await r.text(); let j=null; try{j=txt?JSON.parse(txt):null}catch(e){}
++  if(!r.ok){ const err=new Error(j?.erro||j?.message||j?.error||`Erro ${r.status} em ${path}`); err.status=r.status; throw err }
++  return j;
++}
++function apiStatusDet(apiSt,det){
++  if(det && (ENUM_OF(det)===apiSt || (apiSt==='EM_ANDAMENTO' && ENUM_OF(det)==='ABERTA'))) return det;
++  return DO_ENUM[apiSt]||'Aguardando diagnóstico';
++}
++async function sync(){
++  const [cl,fu,ve,os]=await Promise.all([api('/api/clientes'),api('/api/funcionarios'),api('/api/veiculos'),api('/api/ordens-servico')]);
++  const itens={};
++  API_NOVO=true;
++  await Promise.all(os.map(async o=>{try{itens[o.id]=await api(`/api/ordens-servico/${o.id}/itens`)}catch(e){if(e.status===404||e.status===405)API_NOVO=false;itens[o.id]=null}}));
++  const base=seed();
++  const cli=cl.map(c=>({id:'c'+c.id,nome:c.nomeOuRazaoSocial,doc:c.cpfOuCnpj,tel:c.telefone||'',contato:'',tipo:'',prazo:'',...(X.cli[c.id]||{})}));
++  const mec=fu.map(f=>({id:'m'+f.id,nome:f.nome,esp:f.cargo,valorHora:150,...(X.mec[f.id]||{})}));
++  const vei=ve.map(v=>({id:'v'+v.id,placa:normPlaca(v.placa),marca:v.marca,modelo:v.modelo,ano:v.anoFabricacao||'',chassi:v.chassi||'',clienteId:'c'+v.cliente?.id,
++    tipo:'Truck 6x2',frota:'',km:0,ultRevKm:0,intRev:30000,...(X.vei[v.id]||{})}));
++  const ord=os.map(o=>{
++    const x=X.os[o.id]||{}; const its=itens[o.id]; const meta=x.itens||{};
++    const servicos=[],pecas=[];
++    (its||[]).forEach(it=>{
++      const m=/^\[Peça\]\s*(\d+)\s*[×x]\s*(.*?)(?:\s*\(([^)]*)\))?$/.exec(it.descricao);
++      if(m){const q=Number(m[1])||1;pecas.push({id:'i'+it.id,pecaId:null,desc:m[2],cod:m[3]||'',qtd:q,valor:Number(it.valor)/q})}
++      else servicos.push({id:'i'+it.id,desc:it.descricao,valor:Number(it.valor),mecId:'m'+it.funcionario?.id,sistema:meta[it.id]?.sistema||'—',horas:meta[it.id]?.horas??null,feito:meta[it.id]?.feito??false});
++    });
++    return {id:'o'+o.id,num:o.id,veiculoId:'v'+o.veiculo?.id,clienteId:'c'+o.veiculo?.cliente?.id,apiStatus:o.status,apiTotal:Number(o.valorTotal||0),itensOk:its!=null,
++      abertura:o.dataEntrada,entregue:o.dataSaida,status:apiStatusDet(o.status,x.statusDet),
++      tipo:x.tipo||'Corretiva',prioridade:x.prioridade||'Normal',box:o.status==='FINALIZADA'?'':(x.box||'Pátio'),previsao:x.previsao||'',retornoDe:x.retornoDe,
++      entrada:x.entrada||{km:'',combustivel:'',checklist:{},pneus:{},avarias:[],fotos:[]},
++      reclamacoes:x.reclamacoes||[{id:'r'+o.id,texto:o.defeitoRelatado,sistema:'—',quando:'—',sev:'Média',dtc:'',status:o.status==='FINALIZADA'?'Resolvida':'Aberta',causa:'',data:o.dataEntrada}],
++      diagnostico:x.diagnostico||'',servicos,pecas,aprovado:x.aprovado||null,
++      hist:x.hist||[{d:o.dataEntrada,t:'OS aberta na API — '+o.defeitoRelatado}]};
++  });
++  S={mec,cli,vei,os:ord,pec:X.pec||base.pec,boxes:base.boxes,seq:0};
++  API_ERR=null;
++}
++function saveExtras(){
++  if(API_ERR) return; // sem conexão: não grava dados de exemplo por cima dos extras reais
++  S.os.forEach(o=>{const n=apiId(o.id);const itens={};o.servicos.forEach(s=>{if(String(s.id).startsWith('i'))itens[apiId(s.id)]={sistema:s.sistema,horas:s.horas,feito:s.feito}});
++    X.os[n]={statusDet:o.status,tipo:o.tipo,prioridade:o.prioridade,box:o.box,previsao:o.previsao,retornoDe:o.retornoDe,entrada:o.entrada,reclamacoes:o.reclamacoes,diagnostico:o.diagnostico,aprovado:o.aprovado,hist:o.hist,itens}});
++  S.vei.forEach(v=>X.vei[apiId(v.id)]={tipo:v.tipo,frota:v.frota,km:v.km,ultRevKm:v.ultRevKm,intRev:v.intRev});
++  S.mec.forEach(m=>X.mec[apiId(m.id)]={valorHora:m.valorHora});
++  S.cli.forEach(c=>X.cli[apiId(c.id)]={contato:c.contato,tipo:c.tipo,prazo:c.prazo});
++  X.pec=S.pec;
++  if(!lsSet(XKEY,JSON.stringify(X))) toast('⚠️ Sem espaço no navegador para os dados extras (fotos?).');
++}
++async function apiRun(fn,okMsg){
++  try{ await fn(); await sync(); saveExtras(); if(okMsg) toast(okMsg); }
++  catch(e){ toast('❌ '+esc(e.message)); }
++  rerender(); if(curOS) drawOS();
++}
++async function boot(){
++  if(MODE==='api'){
++    $('#view').innerHTML='<div class="empty" style="padding:80px">Conectando à API em '+esc(API_URL)+'…</div>';
++    try{ await sync(); }catch(e){ API_ERR=e.message; S=seed(); }
++  } else S = load() || seed();
++  render();
++}
++S = seed();
++
++const V = id => S.vei.find(v=>v.id===id)||{};
++const C = id => S.cli.find(c=>c.id===id)||{};
++const M = id => S.mec.find(m=>m.id===id)||{};
++const P = id => S.pec.find(p=>p.id===id)||{};
++const O = id => S.os.find(o=>o.id===id);
++const vServ = s => s.valor ?? s.horas*(M(s.mecId).valorHora||150);
++const mo = o => o.servicos.reduce((a,s)=>a+vServ(s),0);
++const pc = o => o.pecas.reduce((a,p)=>a+p.qtd*p.valor,0);
++const total = o => (o.itensOk===false ? o.apiTotal : mo(o)+pc(o));
++const pecaInfo = p => p.pecaId ? P(p.pecaId) : {cod:p.cod||'—',desc:p.desc,qtd:1};
++const finalizada = o => o.status==='Entregue';
++const abertas = () => S.os.filter(o=>o.status!=='Entregue');
++function log(o,t){o.hist.push({d:now(),t})}
++
++/* ============ ROTEAMENTO ============ */
++const ROUTES = [
++  ['painel','Painel',()=>''],
++  ['entrada','Entrada de veículo',()=>''],
++  ['os','Ordens de serviço',()=>abertas().length],
++  ['defeitos','Defeitos e reclamações',()=>S.os.flatMap(o=>o.reclamacoes).filter(r=>r.status==='Aberta').length||''],
++  ['patio','Pátio e boxes',()=>''],
++  ['estoque','Estoque de peças',()=>S.pec.filter(p=>p.qtd<p.min).length||''],
++  ['frotas','Clientes e frotas',()=>''],
++  ['relatorios','Relatórios',()=>''],
++];
++function route(){ return (location.hash||'#painel').slice(1) }
++function renderFoot(){
++  $('#foot').innerHTML=`<div style="margin-bottom:6px">Fonte de dados</div><div class="seg" style="width:100%"><button style="flex:1" class="${MODE==='demo'?'on':''}" data-act="modo" data-v="demo">Demonstração</button><button style="flex:1" class="${MODE==='api'?'on':''}" data-act="modo" data-v="api">API Spring</button></div>
++  <div style="margin-top:8px">${MODE==='api'?(API_ERR?`<span class="dot" style="background:var(--bad)"></span> Sem conexão · <a href="#" data-act="reconectar">tentar de novo</a>`:`<span class="dot" style="background:var(--ok)"></span> ${esc(API_URL)} · <a href="#" data-act="reconectar">atualizar</a>${API_NOVO?'':'<br><span style="color:var(--warn)">Back-end sem /itens e /status</span>'}`):`Dados salvos neste navegador.<br><a href="#" data-act="reset">Restaurar dados de exemplo</a>`}</div>`;
++}
++function renderNav(){
++  renderFoot();
++  const r=route();
++  $('#nav').innerHTML = ROUTES.map(([k,l,c],i)=>`${i===1?'<div class="sep">Operação</div>':''}${i===5?'<div class="sep">Gestão</div>':''}<a href="#${k}" class="${r===k?'on':''}">${ic(k)}<span class="l">${l}</span>${c()!==''&&c()!==0?`<span class="cnt">${c()}</span>`:''}</a>`).join('');
++}
++function render(){
++  renderNav();
++  const r=route();
++  const fn = VIEWS[r]||VIEWS.painel;
++  $('#view').innerHTML = apiBanner() + fn();
++  AFTER[r]?.();
++  window.scrollTo(0,0);
++}
++const apiBanner=()=>MODE==='api'&&API_ERR?`<div class="alert" style="border-color:var(--bad);margin-bottom:16px"><div class="ic" style="background:var(--badbg);color:var(--bad)">${ic('defeitos')}</div><div><b>Não foi possível conectar à API.</b> ${esc(API_ERR)}<div class="muted" style="margin-top:4px">Confira se o Spring Boot está rodando em ${esc(API_URL)}, se a classe CorsConfig foi adicionada e se você abriu este arquivo pelo seu computador. Enquanto isso, os dados de exemplo aparecem abaixo e não serão salvos.</div><div class="row" style="margin-top:8px"><button class="btn sm" data-act="reconectar">Tentar de novo</button><button class="btn sm ghost" data-act="modo" data-v="demo">Usar demonstração</button></div></div></div>`:'';
++function rerender(){ const y=window.scrollY; renderNav(); const r=route(); $('#view').innerHTML=apiBanner()+(VIEWS[r]||VIEWS.painel)(); AFTER[r]?.(); window.scrollTo(0,y) }
++window.addEventListener('hashchange',render);
++
++/* ============ VIEWS ============ */
++const VIEWS={}, AFTER={};
++const head = (t,sub,btns='') => `<div class="top"><div><h1>${t}</h1>${sub?`<div class="sub">${sub}</div>`:''}</div><div class="sp"></div>${btns}</div>`;
++
++/* ---- PAINEL ---- */
++VIEWS.painel = () => {
++  const ab=abertas();
++  const patio=ab.filter(o=>o.status!=='Pronto p/ retirada').length;
++  const pecas=ab.filter(o=>o.status==='Aguardando peças').length;
++  const aprov=ab.filter(o=>o.status==='Aguardando aprovação');
++  const prontos=ab.filter(o=>o.status==='Pronto p/ retirada');
++  const atras=ab.filter(o=>o.previsao && new Date(o.previsao)<new Date() && o.status!=='Pronto p/ retirada');
++  const fat=ab.reduce((a,o)=>a+total(o),0);
++  const baixo=S.pec.filter(p=>p.qtd<p.min);
++  const prev=S.vei.filter(v=>v.km-v.ultRevKm>=v.intRev*0.9);
++  const retornos=S.os.filter(o=>o.tipo==='Garantia / Retorno' && o.status!=='Entregue');
++  const alerts=[
++    ...atras.map(o=>['bad','clock',`<b>OS #${o.num}</b> <span class="placa">${V(o.veiculoId).placa}</span> passou da previsão de entrega (${fdt(o.previsao)})`,o.id]),
++    ...retornos.map(o=>['vio','repeat',`<b>Retorno em garantia</b> — OS #${o.num} (origem #${o.retornoDe||'?'}). Prioridade para análise de causa raiz.`,o.id]),
++    ...aprov.filter(o=>horasDesde(o.hist.at(-1).d)>3).map(o=>['warn','money',`Orçamento da <b>OS #${o.num}</b> aguardando aprovação há ${dur(horasDesde(o.hist.at(-1).d))} — cobrar o cliente`,o.id]),
++    ...baixo.map(p=>['warn','estoque',`Estoque baixo: <b>${esc(p.desc)}</b> (${p.qtd}/${p.min} un.)`,null]),
++    ...prev.map(v=>['info','cal',`Preventiva ${v.km-v.ultRevKm>=v.intRev?'<b>vencida</b>':'próxima'}: <span class="placa">${v.placa}</span> ${esc(v.marca)} ${esc(v.modelo)} — ${num(v.km-v.ultRevKm)} km desde a última`,null]),
++  ];
++  return head('Painel da oficina', new Date().toLocaleDateString('pt-BR',{weekday:'long',day:'numeric',month:'long'}), `<a class="btn pri" href="#entrada">${ic('plus')}Nova entrada</a>`)+
++  `<div class="grid g4">
++    ${kpi('Veículos no pátio',patio,`${S.boxes.length} boxes · ${ab.filter(o=>o.box&&o.box!=='Pátio').length} ocupados`,'entrada','var(--info)')}
++    ${kpi('Aguardando aprovação',aprov.length,brl(aprov.reduce((a,o)=>a+total(o),0))+' em orçamentos','money','var(--vio)')}
++    ${kpi('Aguardando peças',pecas,'veículos parados por peça','estoque','var(--warn)')}
++    ${kpi('Prontos p/ retirada',prontos.length,'avisar cliente','check','var(--ok)')}
++  </div>
++  <div class="grid g21" style="margin-top:14px">
++    <div class="card"><h3>Fluxo das OS abertas<span class="sp"></span><a href="#os" class="btn sm ghost">Ver quadro</a></h3>
++      <div class="bars">${STATUS.slice(0,7).map(s=>{const n=ab.filter(o=>o.status===s).length;return `<div class="b"><span class="tx2">${s}</span><div class="tr"><div class="fl" style="width:${ab.length?n/ab.length*100:0}%;background:${ST_COR[s]}"></div></div><b class="mono">${n}</b></div>`}).join('')}</div>
++      <hr class="s"><div class="row"><span class="muted">Faturamento previsto (OS abertas)</span><span class="sp"></span><b style="font-size:18px">${brl(fat)}</b></div>
++    </div>
++    <div class="card"><h3>Equipe agora<span class="sp"></span><button class="btn sm ghost" data-act="novoMec">${ic('plus')}Funcionário</button></h3>${!S.mec.length?'<div class="empty">Nenhum funcionário cadastrado</div>':''}
++      ${S.mec.map(m=>{const t=ab.flatMap(o=>o.servicos.filter(s=>s.mecId===m.id&&!s.feito).map(s=>({o,s})));return `<div class="row" style="padding:7px 0;border-bottom:1px solid var(--line)"><span class="dot" style="background:${t.length?'var(--ac)':'var(--ok)'}"></span><div style="min-width:0"><b>${esc(m.nome)}</b><div class="muted" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.length?`OS #${t[0].o.num} · ${esc(t[0].s.desc)}`:'Disponível'}</div></div><span class="sp"></span><span class="tag">${t.reduce((a,x)=>a+(x.s.horas||0),0)}h</span></div>`}).join('')}
++    </div>
++  </div>
++  <div class="grid g2" style="margin-top:14px">
++    <div class="card"><h3>Alertas e pendências <span class="tag">${alerts.length}</span></h3>${alerts.length?alerts.map(([c,i,t,id])=>`<div class="alert" ${id?`data-act="openOS" data-id="${id}" style="cursor:pointer"`:''}><div class="ic" style="background:var(--${c}bg);color:var(--${c})">${ic(i)}</div><div>${t}</div></div>`).join(''):'<div class="empty">Nenhuma pendência 🎉</div>'}</div>
++    <div class="card"><h3>Últimas entradas</h3><div class="tbl"><table><tr><th>OS</th><th>Veículo</th><th>Status</th><th>No pátio</th></tr>
++      ${[...ab].sort((a,b)=>b.abertura.localeCompare(a.abertura)).slice(0,6).map(o=>`<tr class="click" data-act="openOS" data-id="${o.id}"><td class="mono">#${o.num}</td><td><span class="placa">${V(o.veiculoId).placa}</span><div class="muted" style="font-size:12px">${esc(V(o.veiculoId).marca)} ${esc(V(o.veiculoId).modelo)}</div></td><td>${tagSt(o.status)}</td><td class="mono">${dur(horasDesde(o.abertura))}</td></tr>`).join('')}
++    </table></div></div>
++  </div>`;
++};
++const kpi=(l,v,f,i,c)=>`<div class="card kpi"><div class="ic" style="background:color-mix(in srgb, ${c} 15%, transparent);color:${c}">${ic(i)}</div><div class="lb">${l}</div><div class="vl">${v}</div><div class="ft">${f}</div></div>`;
++
++/* ---- ENTRADA (WIZARD) ---- */
++const WSTEPS=['Veículo e cliente','Reclamações','Checklist','Pneus','Avarias e fotos','Revisão e assinatura'];
++let W=null;
++function novoDraft(){return {step:0,v:{placa:'',frota:'',tipo:'Cavalo mecânico 6x2',marca:'',modelo:'',ano:'',chassi:''},clienteId:'',novoCli:{nome:'',doc:'',tel:'',contato:''},
++  e:{km:'',horimetro:'',combustivel:4,motorista:'',motoristaTel:'',checklist:{},ckObs:{},pneus:{},avarias:[],fotos:[],obs:'',pertences:'',assinatura:null,carreta:false,carretaPlaca:''},
++  os:{tipo:'Corretiva',prioridade:'Normal',box:'Pátio',previsao:''},recl:[{texto:'',sistema:'Motor',quando:'Sempre',sev:'Média',dtc:''}],avSel:'Amassado',pneuSel:null}}
++VIEWS.entrada = () => {
++  W ??= novoDraft();
++  const s=W.step;
++  return head('Entrada de veículo','Recepção técnica — registre tudo antes de o veículo entrar no box',`<button class="btn ghost" data-act="wReset">Limpar</button>`)+
++  `<div class="steps">${WSTEPS.map((t,i)=>`<div class="st ${i===s?'on':i<s?'done':''}" data-act="wGo" data-i="${i}"><span class="n">${i<s?'✓':i+1}</span>${t}</div>`).join('')}</div>
++  <div class="card">${[wVeic,wRecl,wCheck,wPneus,wAvar,wRev][s]()}</div>
++  <div class="wfoot">${s>0?`<button class="btn" data-act="wPrev">← Voltar</button>`:''}${s<5?`<button class="btn pri" data-act="wNext">Avançar →</button>`:`<button class="btn pri" data-act="wSave">${ic('check')}Abrir ordem de serviço</button>`}</div>`;
++};
++const inp=(lb,path,attrs='',cls='')=>`<label class="f ${cls}">${lb}<input class="in" data-bind="${path}" value="${esc(getPath(W,path)??'')}" ${attrs}></label>`;
++const sel=(lb,path,opts,cls='')=>`<label class="f ${cls}">${lb}<select class="in" data-bind="${path}">${opts.map(o=>{const[v,t]=Array.isArray(o)?o:[o,o];return `<option value="${esc(v)}" ${getPath(W,path)==v?'selected':''}>${esc(t)}</option>`}).join('')}</select></label>`;
++function wVeic(){
++  const ex=S.vei.find(v=>v.placa===W.v.placa.toUpperCase().replace(/[^A-Z0-9]/g,''));
++  return `<h3>Identificação do veículo</h3>
++  <datalist id="placas">${S.vei.map(v=>`<option value="${v.placa}">${esc(v.marca)} ${esc(v.modelo)} — ${esc(C(v.clienteId).nome)}</option>`).join('')}</datalist>
++  <div class="fg">
++    <label class="f">Placa *<input class="in mono" style="text-transform:uppercase;font-size:16px;letter-spacing:2px" list="placas" data-bind="v.placa" data-act-change="placaLookup" value="${esc(W.v.placa)}" placeholder="ABC1D23" maxlength="8"></label>
++    ${inp('Nº de frota','v.frota','placeholder="ex.: RS-031"')}
++    ${sel('Tipo / configuração','v.tipo',TIPOS_VEIC)}
++    ${inp('Marca','v.marca','placeholder="Scania, Volvo, MB…"')}
++    ${inp('Modelo','v.modelo','placeholder="R 450"')}
++    ${inp('Ano','v.ano','type="number"')}
++    ${inp('Chassi (VIN)','v.chassi','class="mono" maxlength="17"','w2')}
++  </div>
++  ${ex?`<div class="alert" style="margin-top:12px"><div class="ic" style="background:var(--okbg);color:var(--ok)">${ic('check')}</div><div>Veículo já cadastrado — dados preenchidos. Último km registrado: <b class="mono">${num(ex.km)}</b>. ${S.os.filter(o=>o.veiculoId===ex.id).length} passagem(ns) pela oficina.${S.os.some(o=>o.veiculoId===ex.id&&o.status!=='Entregue')?' <span class="tag warn">Já possui OS aberta</span>':''}</div></div>`:''}
++  <hr class="s"><h3>Engate</h3>
++  <div class="row wrap"><label class="row"><input type="checkbox" data-bind="e.carreta" ${W.e.carreta?'checked':''}> Entrou com carreta / implemento engatado</label>${W.e.carreta?`<input class="in mono" style="width:180px" data-bind="e.carretaPlaca" value="${esc(W.e.carretaPlaca)}" placeholder="Placa da carreta">`:''}</div>
++  <hr class="s"><h3>Cliente e motorista</h3>
++  <div class="fg">
++    ${sel('Cliente *','clienteId',[['','— selecione —'],...S.cli.map(c=>[c.id,c.nome]),['novo','+ Novo cliente']],'w2')}
++    ${inp('Motorista que entregou','e.motorista')}
++    ${inp('Telefone do motorista','e.motoristaTel','placeholder="(00) 00000-0000"')}
++  </div>
++  ${W.clienteId==='novo'?`<div class="fg" style="margin-top:12px;padding:12px;background:var(--bg2);border-radius:10px">${inp('Razão social / nome','novoCli.nome','','w2')}${inp('CNPJ / CPF','novoCli.doc')}${inp('Telefone','novoCli.tel')}${inp('Contato responsável','novoCli.contato')}</div>`:''}
++  <hr class="s"><h3>Condições de chegada</h3>
++  <div class="fg">
++    ${inp('Hodômetro (km) *','e.km','type="number" class="mono"')}
++    ${inp('Horímetro (h)','e.horimetro','type="number"')}
++    <label class="f wf">Nível de combustível — <b>${W.e.combustivel}/8</b><div class="fuel">${Array.from({length:8},(_,i)=>`<i class="${i<W.e.combustivel?'on':''} ${W.e.combustivel<=1?'low':''}" data-act="fuel" data-v="${i+1}"></i>`).join('')}</div></label>
++    ${sel('Tipo de atendimento','os.tipo',TIPOS_OS)}
++    ${sel('Prioridade','os.prioridade',PRIOR)}
++    ${sel('Destino','os.box',['Pátio',...S.boxes])}
++    ${inp('Previsão de entrega','os.previsao','type="datetime-local"')}
++  </div>`;
++}
++function wRecl(){
++  return `<h3>Reclamações do cliente / motorista<span class="sp"></span><button class="btn sm" data-act="wAddRecl">${ic('plus')}Adicionar reclamação</button></h3>
++  <p class="muted" style="margin-top:-4px">Registre com as palavras do motorista. Uma linha por sintoma: isso vira itens separados no diagnóstico e no histórico do veículo.</p>
++  ${W.recl.map((r,i)=>`<div style="background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px">
++    <div class="row" style="margin-bottom:8px"><b>Reclamação ${i+1}</b><span class="sp"></span>${W.recl.length>1?`<button class="btn sm ghost danger" data-act="wDelRecl" data-i="${i}">Remover</button>`:''}</div>
++    <div class="fg">
++      <label class="f wf">Relato *<textarea class="in" data-bind="recl.${i}.texto" placeholder="Ex.: perde força na subida carregado e a luz amarela do motor acende">${esc(r.texto)}</textarea></label>
++      ${sel('Sistema','recl.'+i+'.sistema',SISTEMAS)}
++      ${sel('Quando ocorre','recl.'+i+'.quando',QUANDO)}
++      ${sel('Severidade','recl.'+i+'.sev',SEVER)}
++      ${inp('Códigos de falha (DTC)','recl.'+i+'.dtc','placeholder="P20EE, SPN 3226…" class="mono"')}
++    </div></div>`).join('')}
++  <label class="f">Observações gerais da recepção<textarea class="in" data-bind="e.obs" placeholder="Serviços solicitados, restrições do cliente, autorização prévia de valores…">${esc(W.e.obs)}</textarea></label>`;
++}
++function wCheck(){
++  const all=Object.values(CHECK).flat(); const done=all.filter(i=>W.e.checklist[i]).length;
++  return `<h3>Checklist de entrada <span class="tag ${done===all.length?'ok':''}">${done}/${all.length}</span><span class="sp"></span><button class="btn sm" data-act="ckAllOk">Marcar restantes como OK</button></h3>
++  <div class="prog" style="margin-bottom:16px"><i style="width:${done/all.length*100}%"></i></div>
++  <div class="grid g2">${Object.entries(CHECK).map(([g,its])=>`<div class="ckgrp"><h4>${g}</h4>${its.map(it=>{const v=W.e.checklist[it];return `<div class="ck"><span>${esc(it)}</span><div class="seg">${['OK','Atenção','Avaria','N/A'].map(o=>`<button class="${v===o?'on':''}" data-v="${o}" data-act="ck" data-it="${esc(it)}">${o}</button>`).join('')}</div>${v==='Atenção'||v==='Avaria'?`<input class="in obs" placeholder="Descreva…" data-bind="e.ckObs.${it.replace(/\./g,'')}" value="${esc(W.e.ckObs[it.replace(/\./g,'')]||'')}">`:''}</div>`}).join('')}</div>`).join('')}</div>
++  <label class="f">Pertences deixados no veículo<input class="in" data-bind="e.pertences" value="${esc(W.e.pertences)}" placeholder="Rádio PX, GPS, ferramentas, colchão, geladeira…"></label>`;
++}
++function wPneus(){
++  const cfg=cfgDoTipo(W.v.tipo); const ax=PNEU_CFG[cfg];
++  const sel=W.pneuSel; const pd=sel?(W.e.pneus[sel]??={sulco:'',marca:'',dot:'',pressao:'',obs:''}):null;
++  const cls=k=>{const s=parseFloat(W.e.pneus[k]?.sulco);return isNaN(s)?'':s<3?'r':s<6?'y':'g'};
++  const tire=(k,lab)=>`<div class="tire ${cls(k)} ${sel===k?'sel':''}" data-act="pneu" data-k="${k}"><span>${W.e.pneus[k]?.sulco||'—'}</span><small>${lab}</small></div>`;
++  return `<h3>Mapa de pneus <span class="tag">${cfg}</span><span class="sp"></span><span class="muted" style="font-size:12px">Clique em um pneu e informe o sulco em mm</span></h3>
++  <div class="grid g2"><div class="tiremap">
++    ${!/Carreta/.test(cfg)?'<div class="cab">FRENTE · CABINE</div>':'<div class="cab">PINO-REI</div>'}
++    ${ax.map(([n,ps],ai)=>{const L=ps.filter(p=>p.startsWith('E')),R=ps.filter(p=>p.startsWith('D'));return `<div class="axle"><span class="lbl">${n}</span>${L.map(p=>tire(`${ai+1}-${p}`,p)).join('')}<div class="bar"></div>${R.map(p=>tire(`${ai+1}-${p}`,p)).join('')}</div>`}).join('')}
++    <div class="axle"><span class="lbl">Estepe</span>${tire('estepe','EST')}</div>
++    <div class="row muted" style="font-size:12px;gap:14px"><span><span class="dot" style="background:var(--ok)"></span> ≥ 6 mm</span><span><span class="dot" style="background:var(--warn)"></span> 3–6 mm</span><span><span class="dot" style="background:var(--bad)"></span> &lt; 3 mm (limite legal 1,6 mm)</span></div>
++  </div>
++  <div>${pd?`<div style="background:var(--bg2);border-radius:10px;padding:14px"><h3>Pneu ${esc(sel)}</h3><div class="fg">
++    ${inp('Sulco (mm)',`e.pneus.${sel}.sulco`,'type="number" step="0.5" autofocus')}
++    ${inp('Pressão (psi)',`e.pneus.${sel}.pressao`,'type="number"')}
++    ${inp('Marca / modelo',`e.pneus.${sel}.marca`)}
++    ${inp('DOT / nº de fogo',`e.pneus.${sel}.dot`,'class="mono"')}
++    ${sel2('Estado',`e.pneus.${sel}.obs`,['Normal','Recapado','Desgaste irregular','Bolha / corte','Careca'])}
++  </div><button class="btn sm" style="margin-top:12px" data-act="pneuNext">Próximo pneu →</button></div>`:'<div class="empty">Selecione um pneu no mapa ao lado.</div>'}
++  <div style="margin-top:14px" class="muted">Medidos: ${Object.values(W.e.pneus).filter(p=>p.sulco).length} pneus</div></div></div>`;
++}
++const sel2=(lb,path,opts)=>sel(lb,path,opts);
++function truckSVG(marks, interactive=true){
++  return `<svg viewBox="0 0 640 240" ${interactive?'id="dmgsvg"':''}>
++  <defs><pattern id="gr" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0H0V20" fill="none" stroke="#232b35" stroke-width="1"/></pattern></defs>
++  <rect width="640" height="240" fill="url(#gr)"/>
++  <text x="20" y="18" fill="#6f7c8b" font-size="11" font-family="Inter">◀ FRENTE</text><text x="560" y="18" fill="#6f7c8b" font-size="11" font-family="Inter">TRASEIRA ▶</text>
++  <text x="300" y="234" fill="#6f7c8b" font-size="11" font-family="Inter">LADO DIREITO</text><text x="300" y="32" fill="#6f7c8b" font-size="11" font-family="Inter">LADO ESQUERDO</text>
++  <g stroke="#56637a" stroke-width="2" fill="#1e252e">
++    <rect x="150" y="96" width="440" height="12" rx="2"/><rect x="150" y="132" width="440" height="12" rx="2"/>
++    <rect x="60" y="40" width="22" height="22" rx="4"/><rect x="60" y="178" width="22" height="22" rx="4"/>
++    <rect x="80" y="56" width="120" height="128" rx="18" fill="#26303b"/>
++    <rect x="84" y="66" width="16" height="108" rx="4" fill="#3a6f9a" opacity=".7"/>
++    <rect x="120" y="60" width="70" height="10" rx="3"/><rect x="120" y="170" width="70" height="10" rx="3"/>
++    <rect x="215" y="150" width="100" height="36" rx="10" fill="#2c3540"/><text x="235" y="173" fill="#8a96a6" stroke="none" font-size="11">DIESEL</text>
++    <rect x="325" y="152" width="44" height="32" rx="5" fill="#2c3540"/><text x="331" y="172" fill="#8a96a6" stroke="none" font-size="10">ARLA</text>
++    <rect x="215" y="56" width="100" height="26" rx="10" fill="#2c3540"/><text x="236" y="73" fill="#8a96a6" stroke="none" font-size="10">AR / BAT</text>
++    <circle cx="480" cy="120" r="34" fill="#2c3540"/><circle cx="480" cy="120" r="8"/>
++  </g>
++  <g fill="#0b0d10" stroke="#56637a" stroke-width="2">
++    <rect x="100" y="22" width="56" height="22" rx="5"/><rect x="100" y="196" width="56" height="22" rx="5"/>
++    ${[420,520].map(x=>`<rect x="${x}" y="18" width="58" height="20" rx="5"/><rect x="${x}" y="40" width="58" height="20" rx="5"/><rect x="${x}" y="180" width="58" height="20" rx="5"/><rect x="${x}" y="202" width="58" height="20" rx="5"/>`).join('')}
++  </g>
++  <rect x="592" y="80" width="10" height="80" rx="3" fill="#ef4f4f" opacity=".5"/>
++  ${marks.map((m,i)=>`<g><circle cx="${m.x}" cy="${m.y}" r="11" fill="${AV_COR[m.tipo]}" stroke="#0f1216" stroke-width="2"/><text x="${m.x}" y="${m.y+4}" text-anchor="middle" font-size="11" font-weight="700" fill="#111" font-family="Inter">${i+1}</text></g>`).join('')}
++  </svg>`;
++}
++function wAvar(){
++  return `<h3>Avarias na carroceria / chassi</h3>
++  <div class="row wrap" style="margin-bottom:10px"><span class="muted">Tipo:</span><div class="seg">${AVARIAS.map(a=>`<button class="${W.avSel===a?'on':''}" data-act="avSel" data-v="${a}"><span class="dot" style="background:${AV_COR[a]}"></span> ${a}</button>`).join('')}</div></div>
++  <div class="dmg-wrap">${truckSVG(W.e.avarias)}</div>
++  <p class="muted" style="font-size:12px">Clique no desenho para marcar o local da avaria. Isso protege a oficina contra reclamações de danos que já existiam.</p>
++  ${W.e.avarias.length?`<table><tr><th>#</th><th>Tipo</th><th>Descrição</th><th></th></tr>${W.e.avarias.map((a,i)=>`<tr><td><b>${i+1}</b></td><td><span class="tag" style="color:${AV_COR[a.tipo]}"><span class="dot" style="background:${AV_COR[a.tipo]}"></span>${a.tipo}</span></td><td><input class="in" data-bind="e.avarias.${i}.obs" value="${esc(a.obs||'')}" placeholder="ex.: para-choque LD amassado 10 cm"></td><td><button class="btn sm ghost danger" data-act="avDel" data-i="${i}">${ic('x')}</button></td></tr>`).join('')}</table>`:''}
++  <hr class="s"><h3>Fotos da entrada <span class="tag">${W.e.fotos.length}</span></h3>
++  <label class="drop"><input type="file" accept="image/*" multiple hidden id="fotoIn">📷 Clique para anexar fotos (painel com km, laterais, avarias, pneus)</label>
++  <div class="photos" style="margin-top:10px">${W.e.fotos.map((f,i)=>`<div class="ph"><img src="${f}"><button data-act="fotoDel" data-i="${i}">✕</button></div>`).join('')}</div>`;
++}
++function wRev(){
++  const av=Object.entries(W.e.checklist).filter(([,v])=>v==='Avaria'||v==='Atenção');
++  const cli=W.clienteId==='novo'?W.novoCli.nome:C(W.clienteId).nome;
++  const pn=Object.entries(W.e.pneus).filter(([,p])=>parseFloat(p.sulco)<3);
++  return `<h3>Revisão da entrada</h3>
++  <div class="grid g3">
++    <div><div class="muted">Veículo</div><div style="margin:4px 0"><span class="placa">${esc(W.v.placa.toUpperCase()||'—')}</span></div><b>${esc(W.v.marca)} ${esc(W.v.modelo)}</b> ${esc(W.v.ano)}<div class="muted">${esc(W.v.tipo)}${W.e.carreta?` + carreta ${esc(W.e.carretaPlaca)}`:''}</div></div>
++    <div><div class="muted">Cliente</div><b>${esc(cli||'—')}</b><div class="muted">Motorista: ${esc(W.e.motorista||'—')}</div></div>
++    <div><div class="muted">Chegada</div><b class="mono">${num(W.e.km)} km</b><div class="muted">Combustível ${W.e.combustivel}/8 · ${esc(W.os.tipo)} · ${esc(W.os.prioridade)}</div></div>
++  </div><hr class="s">
++  <div class="grid g2"><div><h3>Reclamações</h3>${W.recl.filter(r=>r.texto).map((r,i)=>`<div class="alert"><b>${i+1}.</b><div>${esc(r.texto)}<div class="row wrap" style="margin-top:4px"><span class="tag">${esc(r.sistema)}</span>${tagSev(r.sev)}</div></div></div>`).join('')||'<div class="muted">Nenhuma</div>'}</div>
++  <div><h3>Pontos de atenção na inspeção</h3>${av.map(([k,v])=>`<div class="row" style="padding:3px 0"><span class="tag ${v==='Avaria'?'bad':'warn'}">${v}</span>${esc(k)}</div>`).join('')}${pn.map(([k,p])=>`<div class="row" style="padding:3px 0"><span class="tag bad">Pneu</span>${k}: sulco ${p.sulco} mm</div>`).join('')}${W.e.avarias.length?`<div class="row" style="padding:3px 0"><span class="tag warn">Carroceria</span>${W.e.avarias.length} avaria(s) marcada(s)</div>`:''}${!av.length&&!pn.length&&!W.e.avarias.length?'<div class="muted">Nada registrado</div>':''}</div></div>
++  <hr class="s"><h3>Assinatura do motorista / responsável</h3>
++  <p class="muted" style="margin-top:-6px;font-size:12.5px">Declaro que o veículo foi entregue nas condições acima descritas e autorizo o diagnóstico.</p>
++  <canvas class="sig" id="sig"></canvas><div class="row" style="margin-top:6px"><button class="btn sm ghost" data-act="sigClear">Limpar assinatura</button><span class="sp"></span><span class="muted" style="font-size:12px">${new Date().toLocaleString('pt-BR')}</span></div>`;
++}
++AFTER.entrada = () => {
++  const svg=$('#dmgsvg');
++  if(svg) svg.addEventListener('click',e=>{const pt=svg.createSVGPoint();pt.x=e.clientX;pt.y=e.clientY;const p=pt.matrixTransform(svg.getScreenCTM().inverse());W.e.avarias.push({x:Math.round(p.x),y:Math.round(p.y),tipo:W.avSel,obs:''});rerender()});
++  const fi=$('#fotoIn');
++  if(fi) fi.addEventListener('change',async()=>{for(const f of fi.files){W.e.fotos.push(await shrink(f))}rerender()});
++  const cv=$('#sig'); if(cv) sigPad(cv);
++};
++function shrink(file){return new Promise(res=>{const r=new FileReader();r.onload=()=>{const im=new Image();im.onload=()=>{const k=Math.min(1,520/im.width);const c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);res(c.toDataURL('image/jpeg',.6))};im.src=r.result};r.readAsDataURL(file)})}
++function sigPad(cv){
++  const dpr=window.devicePixelRatio||1;const r=cv.getBoundingClientRect();cv.width=r.width*dpr;cv.height=r.height*dpr;const x=cv.getContext('2d');x.scale(dpr,dpr);x.lineWidth=2.2;x.lineCap='round';x.strokeStyle='#14213d';
++  if(W.e.assinatura){const im=new Image();im.onload=()=>x.drawImage(im,0,0,r.width,r.height);im.src=W.e.assinatura}
++  let d=false;const pos=e=>{const b=cv.getBoundingClientRect();return[e.clientX-b.left,e.clientY-b.top]};
++  cv.onpointerdown=e=>{d=true;cv.setPointerCapture(e.pointerId);x.beginPath();x.moveTo(...pos(e))};
++  cv.onpointermove=e=>{if(!d)return;x.lineTo(...pos(e));x.stroke()};
++  cv.onpointerup=()=>{d=false;W.e.assinatura=cv.toDataURL()};
++}
++function wValida(s){
++  if(s===0){ if(!W.v.placa.trim()) return 'Informe a placa.'; if(!W.clienteId) return 'Selecione o cliente.'; if(W.clienteId==='novo'&&!W.novoCli.nome.trim()) return 'Informe o nome do novo cliente.'; if(!W.e.km) return 'Informe o hodômetro (km).';
++    if(MODE==='api' && !S.vei.some(v=>v.placa===normPlaca(W.v.placa)) && (!W.v.marca.trim()||!W.v.modelo.trim())) return 'Marca e modelo são obrigatórios para cadastrar o veículo na API.';
++    if(MODE==='api' && W.clienteId==='novo' && !W.novoCli.doc.trim()) return 'CPF/CNPJ é obrigatório para cadastrar o cliente na API.';
++    const ex=S.vei.find(v=>v.placa===W.v.placa.toUpperCase().replace(/[^A-Z0-9]/g,'')); if(ex && Number(W.e.km)<ex.km) return `Hodômetro menor que o último registrado (${num(ex.km)} km). Confira o valor.`; }
++  if(s===1 && !W.recl.some(r=>r.texto.trim())) return 'Registre pelo menos uma reclamação ou o serviço solicitado.';
++  return null;
++}
++function wSalvar(){
++  for(let i=0;i<5;i++){const e=wValida(i); if(e){W.step=i;rerender();toast('⚠️ '+e);return}}
++  if(MODE==='api') return wSalvarApi();
++  let clienteId=W.clienteId;
++  if(clienteId==='novo'){clienteId='c'+uid();S.cli.push({id:clienteId,...W.novoCli,tipo:'Autônomo',prazo:'À vista'})}
++  const placa=W.v.placa.toUpperCase().replace(/[^A-Z0-9]/g,'');
++  let v=S.vei.find(x=>x.placa===placa);
++  if(!v){v={id:'v'+uid(),placa,...W.v,placa,clienteId,km:Number(W.e.km),ultRevKm:Number(W.e.km),intRev:30000};S.vei.push(v)}
++  else Object.assign(v,{...W.v,placa,clienteId,km:Number(W.e.km)});
++  const o={id:'o'+uid(),num:S.seq++,veiculoId:v.id,clienteId,tipo:W.os.tipo,status:'Aguardando diagnóstico',prioridade:W.os.prioridade,box:W.os.box,
++    entrada:JSON.parse(JSON.stringify(W.e)),abertura:now(),previsao:W.os.previsao?new Date(W.os.previsao).toISOString():'',
++    reclamacoes:W.recl.filter(r=>r.texto.trim()).map(r=>({...r,id:uid(),status:'Aberta',causa:'',data:now()})),
++    diagnostico:'',servicos:[],pecas:[],aprovado:null,hist:[{d:now(),t:`Veículo recebido — ${W.e.motorista||'motorista não informado'} · ${num(W.e.km)} km`}]};
++  S.os.push(o); save(); W=null; toast(`✅ OS #${o.num} aberta`); location.hash='#os'; setTimeout(()=>openOS(o.id),50);
++}
++
++function textoDefeito(recl){
++  // a coluna defeitoRelatado é VARCHAR(255) por padrão no MySQL
++  const t=recl.map((r,i)=>`${recl.length>1?(i+1)+') ':''}${r.texto.trim()} [${r.sistema}]`).join(' ');
++  return t.length>250?t.slice(0,247)+'...':t;
++}
++async function wSalvarApi(){
++  const btn=document.querySelector('[data-act=wSave]'); if(btn){btn.disabled=true;btn.textContent='Enviando para a API…'}
++  try{
++    const placa=normPlaca(W.v.placa);
++    let cliApi = W.clienteId==='novo' ? null : apiId(W.clienteId);
++    if(!cliApi){ const c=await api('/api/clientes',{method:'POST',body:{nomeOuRazaoSocial:W.novoCli.nome,cpfOuCnpj:W.novoCli.doc,telefone:W.novoCli.tel}}); cliApi=c.id; X.cli[c.id]={contato:W.novoCli.contato,tipo:'',prazo:''} }
++    let v=S.vei.find(x=>x.placa===placa), vApi;
++    if(v) vApi=apiId(v.id);
++    else { const nv=await api(`/api/veiculos/${cliApi}`,{method:'POST',body:{placa,marca:W.v.marca,modelo:W.v.modelo,anoFabricacao:W.v.ano?Number(W.v.ano):null,chassi:W.v.chassi||null}}); vApi=nv.id }
++    X.vei[vApi]={...(X.vei[vApi]||{ultRevKm:Number(W.e.km),intRev:30000}),tipo:W.v.tipo,frota:W.v.frota,km:Number(W.e.km)};
++    const recl=W.recl.filter(r=>r.texto.trim());
++    const os=await api('/api/ordens-servico',{method:'POST',body:{veiculoId:vApi,defeitoRelatado:textoDefeito(recl)}});
++    X.os[os.id]={statusDet:'Aguardando diagnóstico',tipo:W.os.tipo,prioridade:W.os.prioridade,box:W.os.box,previsao:W.os.previsao?new Date(W.os.previsao).toISOString():'',
++      entrada:JSON.parse(JSON.stringify(W.e)),reclamacoes:recl.map(r=>({...r,id:uid(),status:'Aberta',causa:'',data:now()})),diagnostico:'',aprovado:null,
++      hist:[{d:now(),t:`Veículo recebido — ${W.e.motorista||'motorista não informado'} · ${num(W.e.km)} km`}],itens:{}};
++    lsSet(XKEY,JSON.stringify(X));
++    await sync(); saveExtras(); W=null; toast(`✅ OS #${os.id} aberta na API`); location.hash='#os'; setTimeout(()=>openOS('o'+os.id),80);
++  }catch(e){ toast('❌ '+esc(e.message)); if(btn){btn.disabled=false;btn.textContent='Abrir ordem de serviço'} }
++}
++
++/* ---- OS (KANBAN / LISTA) ---- */
++let osView='kanban', osBusca='', osFiltroTipo='';
++VIEWS.os = () => {
++  const q=osBusca.toLowerCase();
++  const list=S.os.filter(o=>{const v=V(o.veiculoId);return (!q||[o.num,v.placa,v.frota,v.modelo,C(o.clienteId).nome,...o.reclamacoes.map(r=>r.texto)].join(' ').toLowerCase().includes(q))&&(!osFiltroTipo||o.tipo===osFiltroTipo)});
++  return head('Ordens de serviço',`${abertas().length} abertas · arraste os cartões entre as colunas`,`<div class="search">${ic('search')}<input class="in" id="osq" placeholder="Placa, frota, OS, cliente…" value="${esc(osBusca)}"></div><select class="in" style="width:auto" id="ostp"><option value="">Todos os tipos</option>${TIPOS_OS.map(t=>`<option ${t===osFiltroTipo?'selected':''}>${t}</option>`).join('')}</select><div class="seg"><button class="${osView==='kanban'?'on':''}" data-act="osView" data-v="kanban">Quadro</button><button class="${osView==='lista'?'on':''}" data-act="osView" data-v="lista">Lista</button></div><a class="btn pri" href="#entrada">${ic('plus')}Nova entrada</a>`)+
++  (osView==='kanban'?`<div class="kanban">${STATUS.map(s=>{const its=list.filter(o=>o.status===s);const show=s==='Entregue'?its.slice(-4):its;return `<div class="col" data-st="${s}"><h4><span class="dot" style="background:${ST_COR[s]}"></span>${s}<span class="c">${its.length}</span></h4>${show.map(osCard).join('')||'<div class="empty" style="padding:14px">—</div>'}</div>`}).join('')}</div>`
++  :`<div class="card tbl"><table><tr><th>OS</th><th>Veículo</th><th>Cliente</th><th>Tipo</th><th>Status</th><th>Prioridade</th><th>Box</th><th>Abertura</th><th style="text-align:right">Total</th></tr>${list.sort((a,b)=>b.num-a.num).map(o=>`<tr class="click" data-act="openOS" data-id="${o.id}"><td class="mono">#${o.num}</td><td><span class="placa">${V(o.veiculoId).placa}</span></td><td>${esc(C(o.clienteId).nome)}</td><td>${esc(o.tipo)}</td><td>${tagSt(o.status)}</td><td>${tagPr(o.prioridade)}</td><td>${esc(o.box||'—')}</td><td>${fdt(o.abertura)}</td><td style="text-align:right" class="mono">${brl(total(o))}</td></tr>`).join('')}</table></div>`);
++};
++const osCard=o=>{const v=V(o.veiculoId);const at=o.previsao&&new Date(o.previsao)<new Date()&&!['Pronto p/ retirada','Entregue'].includes(o.status);const sv=o.servicos.length;const fe=o.servicos.filter(s=>s.feito).length;
++  return `<div class="oc p-${o.prioridade}" draggable="true" data-id="${o.id}" data-act="openOS"><div class="row"><span class="placa">${v.placa}</span>${v.frota?`<span class="muted mono" style="font-size:11px">${esc(v.frota)}</span>`:''}<span class="sp"></span><span class="mono muted" style="font-size:11.5px">#${o.num}</span></div>
++  <div class="t">${esc(v.marca)} ${esc(v.modelo)}</div><div class="d">${esc(o.reclamacoes[0]?.texto||'')}</div>
++  <div class="m">${o.tipo!=='Corretiva'?`<span class="tag ${/Garantia/.test(o.tipo)?'vio':'info'}">${esc(o.tipo)}</span>`:''}${o.prioridade==='Crítica'||o.prioridade==='Alta'?tagPr(o.prioridade):''}${o.box&&o.box!=='Pátio'?`<span class="tag">${esc(o.box)}</span>`:''}<span class="sp"></span><span style="${at?'color:var(--bad);font-weight:700':''}">${ic('clock','width="12" height="12" style="vertical-align:-2px"')} ${dur(horasDesde(o.abertura))}</span></div>
++  ${sv?`<div class="prog" style="margin-top:8px"><i style="width:${fe/sv*100}%"></i></div>`:''}</div>`};
++AFTER.os = () => {
++  const q=$('#osq'); if(q){q.oninput=()=>{osBusca=q.value;const p=q.selectionStart;rerender();const n=$('#osq');n.focus();n.setSelectionRange(p,p)}}
++  const t=$('#ostp'); if(t) t.onchange=()=>{osFiltroTipo=t.value;rerender()};
++  document.querySelectorAll('.oc[draggable]').forEach(c=>c.addEventListener('dragstart',e=>{e.dataTransfer.setData('text/plain',c.dataset.id)}));
++  document.querySelectorAll('.col').forEach(col=>{
++    col.addEventListener('dragover',e=>{e.preventDefault();col.classList.add('over')});
++    col.addEventListener('dragleave',()=>col.classList.remove('over'));
++    col.addEventListener('drop',e=>{e.preventDefault();col.classList.remove('over');mudarStatus(O(e.dataTransfer.getData('text/plain')),col.dataset.st)});
++  });
++};
++function mudarStatus(o,st){
++  if(!o||o.status===st) return;
++  if(st==='Entregue' && o.servicos.some(s=>!s.feito)) {toast('⚠️ Há serviços não concluídos nesta OS.');}
++  if(['Em execução','Aguardando peças'].includes(st) && !o.aprovado && o.tipo!=='Garantia / Retorno') toast('⚠️ Orçamento ainda não aprovado pelo cliente.');
++  if(MODE==='api'){
++    const de=o.status, alvo=ENUM_OF(st), n=apiId(o.id);
++    return apiRun(async()=>{
++      if(st==='Entregue') await api(`/api/ordens-servico/${n}/finalizar`,{method:'PUT'});
++      else if(alvo!==o.apiStatus && !(alvo==='ABERTA'&&o.apiStatus==='EM_ANDAMENTO')){
++        try{ await api(`/api/ordens-servico/${n}/status`,{method:'PUT',body:{status:alvo}}) }
++        catch(e){ if(e.status===404||e.status===405) toast('ℹ️ O back-end ainda não tem PUT /status — a etapa foi salva só neste navegador.'); else throw e }
++      }
++      log(o,`Status: ${de} → ${st}`); o.status=st;
++      if(st==='Entregue'){o.box='';o.reclamacoes.forEach(r=>{if(r.status!=='Resolvida')r.status='Resolvida'})}
++      saveExtras();
++    });
++  }
++  log(o,`Status: ${o.status} → ${st}`); o.status=st;
++  if(st==='Entregue'){o.entregue=now();o.box=''; o.reclamacoes.forEach(r=>{if(r.status!=='Resolvida')r.status='Resolvida'})}
++  save(); rerender(); if(curOS===o.id) drawOS();
++}
++
++/* ---- DETALHE DA OS ---- */
++let curOS=null, osTab='resumo';
++function openOS(id){curOS=id;osTab='resumo';drawOS()}
++function closeModal(){curOS=null;$('#modal').innerHTML='';rerender()}
++function drawOS(){
++  const o=O(curOS); if(!o) return; const v=V(o.veiculoId), c=C(o.clienteId);
++  const tabs=[['resumo','Resumo'],['recl',`Reclamações (${o.reclamacoes.length})`],['serv','Serviços e peças'],['entrada','Checklist de entrada'],['hist','Histórico']];
++  const sc=$('.drawer')?.scrollTop||0;
++  $('#modal').innerHTML=`<div class="ov" data-act="ovClose"><div class="drawer" data-stop>
++    <div class="row"><span class="placa" style="font-size:16px">${v.placa}</span><h2 style="margin:0;font-size:20px">OS #${o.num}</h2>${tagSt(o.status)}${tagPr(o.prioridade)}<span class="sp"></span><button class="btn sm" data-act="copyOS">${ic('copy')}Copiar resumo</button><button class="btn sm ghost" data-act="close">${ic('x')}</button></div>
++    <div class="muted" style="margin-top:6px">${esc(v.marca)} ${esc(v.modelo)} ${esc(v.ano)} · ${esc(v.tipo)} · ${esc(c.nome)} · aberta ${fdt(o.abertura)}${o.retornoDe?` · <span class="tag vio">Retorno da OS #${o.retornoDe}</span>`:''}</div>
++    <div class="grid g4" style="margin-top:14px">
++      <label class="f">Status<select class="in" data-osf="status">${STATUS.map(s=>`<option ${s===o.status?'selected':''}>${s}</option>`).join('')}</select></label>
++      <label class="f">Prioridade<select class="in" data-osf="prioridade">${PRIOR.map(s=>`<option ${s===o.prioridade?'selected':''}>${s}</option>`).join('')}</select></label>
++      <label class="f">Box<select class="in" data-osf="box">${['Pátio',...S.boxes].map(s=>`<option ${s===o.box?'selected':''}>${s}</option>`).join('')}</select></label>
++      <label class="f">Previsão de entrega<input type="datetime-local" class="in" data-osf="previsao" value="${o.previsao?toLocalInput(o.previsao):''}"></label>
++    </div>
++    <div class="tabs">${tabs.map(([k,l])=>`<button class="${osTab===k?'on':''}" data-act="osTab" data-v="${k}">${l}</button>`).join('')}</div>
++    ${({resumo:tResumo,recl:tRecl,serv:tServ,entrada:tEntrada,hist:tHist})[osTab](o)}
++  </div></div>`;
++  $('.drawer').scrollTop=sc;
++  document.querySelectorAll('[data-osf]').forEach(el=>el.onchange=()=>{const f=el.dataset.osf;if(f==='status') return mudarStatus(o,el.value);const val=f==='previsao'?(el.value?new Date(el.value).toISOString():''):el.value;log(o,`${f[0].toUpperCase()+f.slice(1)} alterado para ${f==='previsao'?fdt(val):val}`);o[f]=val;save();drawOS()});
++  document.querySelectorAll('[data-of]').forEach(el=>el.onchange=()=>{setPath(o,el.dataset.of,el.type==='number'?Number(el.value):el.value);save();drawOS()});
++}
++const toLocalInput=iso=>{const d=new Date(iso);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16)};
++function tResumo(o){
++  const v=V(o.veiculoId);const hist=S.os.filter(x=>x.veiculoId===o.veiculoId&&x.id!==o.id);
++  return `<div class="grid g2">
++  <div class="card"><h3>Orçamento</h3>
++    <div class="sum"><span>Mão de obra (${o.servicos.reduce((a,s)=>a+(s.horas||0),0)} h)</span><span class="mono">${brl(mo(o))}</span></div>
++    <div class="sum"><span>Peças (${o.pecas.length} itens)</span><span class="mono">${brl(pc(o))}</span></div>
++    <div class="sum tot"><span>Total</span><span>${brl(total(o))}</span></div>
++    <hr class="s">${o.aprovado?`<div class="alert"><div class="ic" style="background:var(--okbg);color:var(--ok)">${ic('check')}</div><div><b>Aprovado</b> em ${fdt(o.aprovado.data)}<div class="muted">${esc(o.aprovado.por)}</div></div></div>`:`<div class="alert"><div class="ic" style="background:var(--viobg);color:var(--vio)">${ic('money')}</div><div><b>Aguardando aprovação do cliente</b><div class="muted">Registre quem aprovou e por qual meio.</div></div></div><button class="btn pri sm" data-act="aprovar">Registrar aprovação</button>`}
++  </div>
++  <div class="card"><h3>Diagnóstico técnico</h3><textarea class="in" style="min-height:130px" data-of="diagnostico" placeholder="Testes realizados, medições, códigos lidos, causa provável…">${esc(o.diagnostico)}</textarea></div>
++  <div class="card"><h3>Chegada</h3><div class="grid g2"><div><div class="muted">Hodômetro</div><b class="mono">${num(o.entrada.km)} km</b></div><div><div class="muted">Combustível</div><b>${o.entrada.combustivel}/8</b></div><div><div class="muted">Motorista</div><b>${esc(o.entrada.motorista||'—')}</b></div><div><div class="muted">Tipo</div><b>${esc(o.tipo)}</b></div></div></div>
++  <div class="card"><h3>Histórico do veículo <span class="tag">${hist.length}</span></h3>${hist.length?hist.sort((a,b)=>b.num-a.num).map(h=>`<div class="row" style="padding:5px 0;border-bottom:1px solid var(--line);cursor:pointer" data-act="openOS" data-id="${h.id}"><span class="mono">#${h.num}</span><span class="muted">${fd(h.abertura)}</span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(h.reclamacoes[0]?.texto||'')}</span>${tagSt(h.status)}</div>`).join(''):'<div class="muted">Primeira passagem pela oficina.</div>'}
++    ${o.status==='Entregue'?`<button class="btn sm" style="margin-top:10px" data-act="retorno">${ic('repeat')}Abrir retorno em garantia</button>`:''}</div>
++  </div>`;
++}
++function tRecl(o){
++  return `<div class="row" style="margin-bottom:10px"><span class="muted">Cada reclamação deve terminar com causa raiz e solução: é isso que alimenta os relatórios de defeitos.</span><span class="sp"></span><button class="btn sm" data-act="addRecl">${ic('plus')}Nova reclamação</button></div>
++  ${o.reclamacoes.map((r,i)=>`<div class="card" style="margin-bottom:10px"><div class="row wrap"><b>${i+1}.</b><span class="tag">${esc(r.sistema)}</span>${tagSev(r.sev)}<span class="tag">${esc(r.quando)}</span>${r.dtc?`<span class="tag mono">${esc(r.dtc)}</span>`:''}<span class="sp"></span>
++    <select class="in" style="width:auto" data-of="reclamacoes.${i}.status">${['Aberta','Diagnosticada','Resolvida','Não procede'].map(s=>`<option ${s===r.status?'selected':''}>${s}</option>`).join('')}</select></div>
++    <p style="margin:10px 0">“${esc(r.texto)}”</p>
++    <div class="fg"><label class="f">Causa raiz<input class="in" data-of="reclamacoes.${i}.causa" value="${esc(r.causa)}" placeholder="O que realmente causou o defeito"></label><label class="f">Solução aplicada<input class="in" data-of="reclamacoes.${i}.solucao" value="${esc(r.solucao||'')}" placeholder="O que foi feito"></label></div></div>`).join('')}`;
++}
++function tServ(o){
++  return `${o.itensOk===false?`<div class="alert" style="margin-bottom:14px"><div class="ic" style="background:var(--warnbg);color:var(--warn)">${ic('defeitos')}</div><div>O back-end atual não lista os itens da OS (falta <span class="mono">GET /api/ordens-servico/{id}/itens</span>). O total vem da API, mas o detalhamento só aparece depois de aplicar as alterações do back-end.</div></div>`:''}<div class="card" style="margin-bottom:14px"><h3>Mão de obra<span class="sp"></span><button class="btn sm" data-act="addServ">${ic('plus')}Serviço</button></h3>
++  ${o.servicos.length?`<div class="tbl"><table><tr><th></th><th>Serviço</th><th>Sistema</th><th>Mecânico</th><th>Horas</th><th style="text-align:right">Valor</th><th></th></tr>${o.servicos.map((s,i)=>`<tr><td><input type="checkbox" ${s.feito?'checked':''} data-act="servFeito" data-i="${i}" title="Concluído"></td><td style="${s.feito?'text-decoration:line-through;color:var(--tx3)':''}">${esc(s.desc)}</td><td><span class="tag">${esc(s.sistema)}</span></td>${MODE==='api'?`<td>${esc(M(s.mecId).nome||'—')}</td><td class="mono">${s.horas??'—'}</td>`:`<td><select class="in" style="width:auto" data-of="servicos.${i}.mecId">${S.mec.map(m=>`<option value="${m.id}" ${m.id===s.mecId?'selected':''}>${esc(m.nome)}</option>`).join('')}</select></td><td><input type="number" step="0.5" class="in mono" style="width:70px" data-of="servicos.${i}.horas" value="${s.horas}"></td>`}<td style="text-align:right" class="mono">${brl(vServ(s))}</td><td>${MODE==='api'?'':`<button class="btn sm ghost danger" data-act="delServ" data-i="${i}">${ic('x')}</button>`}</td></tr>`).join('')}</table></div>`:'<div class="empty">Nenhum serviço lançado</div>'}</div>
++  <div class="card"><h3>Peças e insumos<span class="sp"></span><button class="btn sm" data-act="addPeca">${ic('plus')}Peça</button></h3>
++  ${o.pecas.length?`<div class="tbl"><table><tr><th>Código</th><th>Descrição</th><th>Qtd</th><th>Unit.</th><th style="text-align:right">Subtotal</th><th></th></tr>${o.pecas.map((p,i)=>{const pp=pecaInfo(p);return `<tr><td class="mono">${esc(pp.cod)}</td><td>${esc(pp.desc)} ${p.pecaId&&pp.qtd<=0?'<span class="tag bad">sem estoque</span>':''}</td><td class="mono">${p.qtd}</td><td class="mono">${brl(p.valor)}</td><td style="text-align:right" class="mono">${brl(p.qtd*p.valor)}</td><td>${MODE==='api'?'':`<button class="btn sm ghost danger" data-act="delPeca" data-i="${i}">${ic('x')}</button>`}</td></tr>`}).join('')}</table></div>`:'<div class="empty">Nenhuma peça lançada</div>'}
++  <div class="sum tot"><span>Total da OS</span><span>${brl(total(o))}</span></div></div>`;
++}
++function tEntrada(o){
++  const e=o.entrada;const ck=Object.entries(e.checklist||{});
++  return `<div class="grid g2"><div class="card"><h3>Checklist</h3>${ck.length?ck.map(([k,v])=>`<div class="row" style="padding:4px 0;border-bottom:1px solid var(--line)"><span style="flex:1">${esc(k)}${e.ckObs?.[k.replace(/\./g,'')]?`<div class="muted" style="font-size:12px">${esc(e.ckObs[k.replace(/\./g,'')])}</div>`:''}</span><span class="tag ${v==='OK'?'ok':v==='Avaria'?'bad':v==='Atenção'?'warn':''}">${v}</span></div>`).join(''):'<div class="muted">Checklist não preenchido nesta entrada.</div>'}
++  ${e.pertences?`<hr class="s"><b>Pertences:</b> ${esc(e.pertences)}`:''}</div>
++  <div><div class="card" style="margin-bottom:14px"><h3>Avarias (${(e.avarias||[]).length})</h3><div class="dmg-wrap">${truckSVG(e.avarias||[],false)}</div>${(e.avarias||[]).map((a,i)=>`<div style="font-size:12.5px;padding:2px 0"><b>${i+1}.</b> ${a.tipo}${a.obs?' — '+esc(a.obs):''}</div>`).join('')}</div>
++  <div class="card" style="margin-bottom:14px"><h3>Pneus</h3>${Object.entries(e.pneus||{}).filter(([,p])=>p.sulco).map(([k,p])=>`<span class="tag ${parseFloat(p.sulco)<3?'bad':parseFloat(p.sulco)<6?'warn':'ok'}" style="margin:2px">${k}: ${p.sulco} mm</span>`).join('')||'<span class="muted">Sem medições</span>'}</div>
++  ${(e.fotos||[]).length?`<div class="card" style="margin-bottom:14px"><h3>Fotos</h3><div class="photos">${e.fotos.map(f=>`<div class="ph"><img src="${f}"></div>`).join('')}</div></div>`:''}
++  ${e.assinatura?`<div class="card"><h3>Assinatura</h3><img src="${e.assinatura}" style="width:100%;background:#f6f7f8;border-radius:8px"></div>`:''}</div></div>`;
++}
++function tHist(o){return `<div class="row" style="margin-bottom:12px"><input class="in" id="notaIn" placeholder="Adicionar anotação (ex.: cliente ligou pedindo previsão)"><button class="btn" data-act="addNota">Anotar</button></div><div class="tl">${[...o.hist].reverse().map(h=>`<div class="it"><small>${fdt(h.d)}</small>${esc(h.t)}</div>`).join('')}</div>`}
++
++/* ---- diálogos ---- */
++function dialog(title,body,onOk,okLabel='Salvar'){
++  const d=document.createElement('div');d.className='ov center';d.style.zIndex=60;
++  d.innerHTML=`<div class="dlg"><h3 style="margin:0 0 14px">${title}</h3><form id="dlgf">${body}<div class="wfoot"><button type="button" class="btn ghost" id="dlgc">Cancelar</button><button class="btn pri">${okLabel}</button></div></form></div>`;
++  document.body.appendChild(d);
++  d.querySelector('#dlgc').onclick=()=>d.remove();
++  d.addEventListener('click',e=>{if(e.target===d)d.remove()});
++  d.querySelector('#dlgf').onsubmit=e=>{e.preventDefault();const fd=Object.fromEntries(new FormData(e.target));if(onOk(fd)!==false)d.remove()};
++  setTimeout(()=>d.querySelector('input,select,textarea')?.focus(),30);
++}
++const fsel=(n,l,opts,v)=>`<label class="f" style="margin-bottom:10px">${l}<select class="in" name="${n}">${opts.map(o=>{const[a,b]=Array.isArray(o)?o:[o,o];return `<option value="${esc(a)}" ${a==v?'selected':''}>${esc(b)}</option>`}).join('')}</select></label>`;
++const finp=(n,l,a='')=>`<label class="f" style="margin-bottom:10px">${l}<input class="in" name="${n}" ${a}></label>`;
++
++/* ---- DEFEITOS ---- */
++let dfSis='',dfSt='';
++VIEWS.defeitos = () => {
++  const all=S.os.flatMap(o=>o.reclamacoes.map(r=>({...r,o})));
++  const f=all.filter(r=>(!dfSis||r.sistema===dfSis)&&(!dfSt||r.status===dfSt)).sort((a,b)=>b.data.localeCompare(a.data));
++  // reincidência: mesmo veículo + mesmo sistema em OS diferentes nos últimos 90 dias
++  const reinc={};all.filter(r=>horasDesde(r.data)<90*24).forEach(r=>{const k=r.o.veiculoId+'|'+r.sistema;(reinc[k]??=new Set()).add(r.o.id)});
++  const rein=Object.entries(reinc).filter(([,s])=>s.size>1);
++  const porSis=SISTEMAS.map(s=>[s,all.filter(r=>r.sistema===s).length]).filter(x=>x[1]).sort((a,b)=>b[1]-a[1]);
++  const mx=Math.max(1,...porSis.map(x=>x[1]));
++  return head('Defeitos e reclamações','Tudo o que o cliente relatou, com causa raiz e reincidência',`<button class="btn pri" data-act="novoDefeito">${ic('plus')}Registrar reclamação</button>`)+
++  `<div class="grid g4">${kpi('Abertas',all.filter(r=>r.status==='Aberta').length,'sem diagnóstico','defeitos','var(--warn)')}${kpi('Críticas (imobilizam)',all.filter(r=>/Crít/.test(r.sev)&&r.status!=='Resolvida').length,'em andamento','defeitos','var(--bad)')}${kpi('Reincidências (90 dias)',rein.length,'mesmo veículo e sistema','repeat','var(--vio)')}${kpi('Resolvidas',all.filter(r=>r.status==='Resolvida').length,`de ${all.length} registradas`,'check','var(--ok)')}</div>
++  <div class="grid g21" style="margin-top:14px">
++  <div class="card"><h3>Registro<span class="sp"></span><select class="in" style="width:auto" id="dfSis"><option value="">Todos os sistemas</option>${SISTEMAS.map(s=>`<option ${s===dfSis?'selected':''}>${s}</option>`).join('')}</select><select class="in" style="width:auto" id="dfSt"><option value="">Todos</option>${['Aberta','Diagnosticada','Resolvida','Não procede'].map(s=>`<option ${s===dfSt?'selected':''}>${s}</option>`).join('')}</select></h3>
++  <div class="tbl"><table><tr><th>Data</th><th>Veículo</th><th>Relato</th><th>Sistema</th><th>Severidade</th><th>Status</th></tr>${f.map(r=>`<tr class="click" data-act="openOS" data-id="${r.o.id}" data-tab="recl"><td style="white-space:nowrap">${fd(r.data)}<div class="muted mono" style="font-size:11.5px">OS #${r.o.num}</div></td><td><span class="placa">${V(r.o.veiculoId).placa}</span></td><td style="max-width:320px">${esc(r.texto)}${r.causa?`<div class="muted" style="font-size:12px">Causa: ${esc(r.causa)}</div>`:''}</td><td><span class="tag">${esc(r.sistema)}</span></td><td>${tagSev(r.sev)}</td><td><span class="tag ${r.status==='Resolvida'?'ok':r.status==='Aberta'?'warn':'info'}">${r.status}</span></td></tr>`).join('')||'<tr><td colspan="6" class="empty">Nada encontrado</td></tr>'}</table></div></div>
++  <div><div class="card" style="margin-bottom:14px"><h3>Defeitos por sistema</h3><div class="bars">${porSis.map(([s,n])=>`<div class="b" style="grid-template-columns:130px 1fr 30px"><span class="tx2" style="font-size:12px">${s}</span><div class="tr"><div class="fl" style="width:${n/mx*100}%"></div></div><b class="mono">${n}</b></div>`).join('')}</div></div>
++  <div class="card"><h3>Reincidências</h3>${rein.length?rein.map(([k,s])=>{const[vid,sis]=k.split('|');return `<div class="alert"><div class="ic" style="background:var(--viobg);color:var(--vio)">${ic('repeat')}</div><div><span class="placa">${V(vid).placa}</span> <b>${esc(sis)}</b><div class="muted">${s.size} passagens em 90 dias. Revisar diagnóstico anterior e qualidade da peça.</div></div></div>`}).join(''):'<div class="muted">Nenhuma reincidência 👍</div>'}</div></div></div>`;
++};
++AFTER.defeitos=()=>{$('#dfSis').onchange=e=>{dfSis=e.target.value;rerender()};$('#dfSt').onchange=e=>{dfSt=e.target.value;rerender()}};
++
++/* ---- PÁTIO ---- */
++VIEWS.patio = () => {
++  const ab=abertas();
++  const fora=ab.filter(o=>!o.box||o.box==='Pátio');
++  return head('Pátio e boxes','Ocupação em tempo real das baias de serviço')+
++  `<div class="grid g4">${S.boxes.map(b=>{const o=ab.find(x=>x.box===b);if(!o)return `<div class="box free"><b>${b}</b><span>Livre</span></div>`;const v=V(o.veiculoId);const m=o.servicos.find(s=>!s.feito);
++    return `<div class="box" style="border-top:3px solid ${ST_COR[o.status]};cursor:pointer" data-act="openOS" data-id="${o.id}"><div class="hd">${b}<span class="sp"></span><span class="mono muted" style="font-size:12px">#${o.num}</span></div><div><span class="placa">${v.placa}</span></div><div style="font-weight:600">${esc(v.marca)} ${esc(v.modelo)}</div>${tagSt(o.status)}<div class="muted" style="font-size:12px">${m?`${ic('user','width="12" height="12" style="vertical-align:-2px"')} ${esc(M(m.mecId).nome)} · ${esc(m.desc)}`:''}</div><div class="muted" style="font-size:12px;margin-top:auto">${ic('clock','width="12" height="12" style="vertical-align:-2px"')} ${dur(horasDesde(o.abertura))} na oficina</div></div>`}).join('')}</div>
++  <div class="card" style="margin-top:14px"><h3>Pátio externo / fila <span class="tag">${fora.length}</span></h3>${fora.length?`<div class="tbl"><table><tr><th>OS</th><th>Veículo</th><th>Status</th><th>Prioridade</th><th>Aguardando</th><th>Mover para</th></tr>${fora.map(o=>`<tr><td class="mono">#${o.num}</td><td><span class="placa">${V(o.veiculoId).placa}</span> ${esc(V(o.veiculoId).modelo)}</td><td>${tagSt(o.status)}</td><td>${tagPr(o.prioridade)}</td><td class="mono">${dur(horasDesde(o.abertura))}</td><td><select class="in" style="width:auto" data-mover="${o.id}"><option>—</option>${S.boxes.filter(b=>!ab.some(x=>x.box===b)).map(b=>`<option>${b}</option>`).join('')}</select></td></tr>`).join('')}</table></div>`:'<div class="empty">Nenhum veículo aguardando no pátio</div>'}</div>`;
++};
++AFTER.patio=()=>document.querySelectorAll('[data-mover]').forEach(s=>s.onchange=()=>{const o=O(s.dataset.mover);o.box=s.value;log(o,`Movido para ${s.value}`);save();rerender();toast(`OS #${o.num} → ${s.value}`)});
++
++/* ---- ESTOQUE ---- */
++let pqBusca='';
++VIEWS.estoque = () => {
++  const q=pqBusca.toLowerCase();const l=S.pec.filter(p=>!q||[p.cod,p.desc,p.apl].join(' ').toLowerCase().includes(q));
++  const reserv=id=>abertas().reduce((a,o)=>a+o.pecas.filter(p=>p.pecaId===id).reduce((x,p)=>x+p.qtd,0),0);
++  return head('Estoque de peças',`${S.pec.length} itens · valor em estoque ${brl(S.pec.reduce((a,p)=>a+p.qtd*p.custo,0))} (custo)`,`<div class="search">${ic('search')}<input class="in" id="pq" placeholder="Código, descrição, aplicação" value="${esc(pqBusca)}"></div><button class="btn pri" data-act="novaPeca">${ic('plus')}Nova peça</button>`)+
++  `<div class="card tbl"><table><tr><th>Código</th><th>Descrição</th><th>Aplicação</th><th>Em estoque</th><th>Mínimo</th><th>Em OS abertas</th><th>Custo</th><th>Venda</th><th>Margem</th><th></th></tr>${l.map(p=>`<tr><td class="mono">${esc(p.cod)}</td><td><b>${esc(p.desc)}</b></td><td class="muted">${esc(p.apl)}</td><td><span class="tag ${p.qtd<=0?'bad':p.qtd<p.min?'warn':'ok'}">${p.qtd}</span></td><td class="mono">${p.min}</td><td class="mono">${reserv(p.id)||'—'}</td><td class="mono">${brl(p.custo)}</td><td class="mono">${brl(p.venda)}</td><td class="mono">${p.custo?Math.round((p.venda/p.custo-1)*100):0}%</td><td><button class="btn sm" data-act="entradaPeca" data-id="${p.id}">+ Entrada</button></td></tr>`).join('')}</table></div>`;
++};
++AFTER.estoque=()=>{const q=$('#pq');q.oninput=()=>{pqBusca=q.value;const p=q.selectionStart;rerender();const n=$('#pq');n.focus();n.setSelectionRange(p,p)}};
++
++/* ---- FROTAS ---- */
++VIEWS.frotas = () => head('Clientes e frotas','Cadastro, histórico e controle de preventiva por km',`<button class="btn pri" data-act="novoCli">${ic('plus')}Novo cliente</button>`)+
++  S.cli.map(c=>{const vs=S.vei.filter(v=>v.clienteId===c.id);const gasto=S.os.filter(o=>o.clienteId===c.id).reduce((a,o)=>a+total(o),0);
++  return `<div class="card" style="margin-bottom:14px"><h3>${esc(c.nome)} <span class="tag ${c.tipo==='Frotista'?'info':''}">${esc(c.tipo||'')}</span><span class="sp"></span><span class="muted" style="font-weight:500;font-size:12.5px">${esc(c.doc)} · ${esc(c.tel)} · ${esc(c.contato)} · Prazo: ${esc(c.prazo||'—')} · Total em OS: <b class="tx2">${brl(gasto)}</b></span></h3>
++  <div class="tbl"><table><tr><th>Placa</th><th>Frota</th><th>Veículo</th><th>Km atual</th><th>Preventiva</th><th>Passagens</th><th>Situação</th></tr>${vs.map(v=>{const rod=v.km-v.ultRevKm;const pct=Math.min(100,rod/v.intRev*100);const os=S.os.filter(o=>o.veiculoId===v.id);const ab=os.find(o=>o.status!=='Entregue');
++    return `<tr><td><span class="placa">${v.placa}</span></td><td class="mono">${esc(v.frota||'—')}</td><td>${esc(v.marca)} ${esc(v.modelo)} <span class="muted">${esc(v.ano)} · ${esc(v.tipo)}</span></td><td class="mono">${num(v.km)}</td><td style="min-width:170px"><div class="prog"><i style="width:${pct}%;background:${pct>=100?'var(--bad)':pct>=90?'var(--warn)':'var(--ok)'}"></i></div><div class="muted" style="font-size:11.5px;margin-top:3px">${num(rod)} / ${num(v.intRev)} km${pct>=100?' · <b style="color:var(--bad)">VENCIDA</b>':''}</div></td><td class="mono">${os.length}</td><td>${ab?`<span data-act="openOS" data-id="${ab.id}" style="cursor:pointer">${tagSt(ab.status)}</span>`:'<span class="tag">Em operação</span>'}</td></tr>`}).join('')||'<tr><td colspan="7" class="empty">Sem veículos</td></tr>'}</table></div></div>`}).join('');
++
++/* ---- RELATÓRIOS ---- */
++VIEWS.relatorios = () => {
++  const ent=S.os.filter(o=>o.status==='Entregue'||o.status==='Pronto p/ retirada');
++  const ticket=S.os.length?S.os.reduce((a,o)=>a+total(o),0)/S.os.length:0;
++  const perm=ent.length?ent.reduce((a,o)=>a+((new Date(o.entregue||Date.now()))-new Date(o.abertura))/36e5,0)/ent.length:0;
++  const ret=S.os.filter(o=>o.tipo==='Garantia / Retorno').length;
++  const tx=S.os.length?ret/S.os.length*100:0;
++  const porTipo=TIPOS_OS.map(t=>[t,S.os.filter(o=>o.tipo===t).length]).filter(x=>x[1]);
++  const fatSis={};S.os.forEach(o=>o.servicos.forEach(s=>{fatSis[s.sistema]=(fatSis[s.sistema]||0)+vServ(s)}));
++  const fs=Object.entries(fatSis).sort((a,b)=>b[1]-a[1]);const mfs=Math.max(1,...fs.map(x=>x[1]));
++  const prod=S.mec.map(m=>{const sv=S.os.flatMap(o=>o.servicos.filter(s=>s.mecId===m.id));return [m,sv.reduce((a,s)=>a+(s.horas||0),0),sv.filter(s=>s.feito).reduce((a,s)=>a+(s.horas||0),0)]});
++  const mp=Math.max(1,...prod.map(x=>x[1]));
++  const espera=['Aguardando aprovação','Aguardando peças'].map(s=>[s,abertas().filter(o=>o.status===s).reduce((a,o)=>a+horasDesde(o.abertura),0)]);
++  return head('Relatórios','Indicadores de desempenho da oficina')+
++  `<div class="grid g4">${kpi('Ticket médio por OS',brl(ticket),`${S.os.length} OS no período`,'money','var(--ac)')}${kpi('Permanência média',dur(perm),'da entrada à liberação','clock','var(--info)')}${kpi('Taxa de retorno',tx.toFixed(1)+'%',`${ret} retorno(s) em garantia`,'repeat',tx>5?'var(--bad)':'var(--ok)')}${kpi('Horas vendidas',S.os.reduce((a,o)=>a+o.servicos.reduce((x,s)=>x+(s.horas||0),0),0)+' h',brl(S.os.reduce((a,o)=>a+mo(o),0))+' em mão de obra','wrench','var(--vio)')}</div>
++  <div class="grid g2" style="margin-top:14px">
++   <div class="card"><h3>Mão de obra por sistema</h3><div class="bars">${fs.map(([s,v])=>`<div class="b" style="grid-template-columns:170px 1fr 90px"><span class="tx2">${s}</span><div class="tr"><div class="fl" style="width:${v/mfs*100}%"></div></div><b class="mono" style="font-size:12px">${brl(v)}</b></div>`).join('')}</div></div>
++   <div class="card"><h3>Produtividade por mecânico <span class="muted" style="font-weight:500;font-size:12px">(horas lançadas / concluídas)</span></h3><div class="bars">${prod.map(([m,t,f])=>`<div class="b" style="grid-template-columns:150px 1fr 60px"><span class="tx2">${esc(m.nome)}</span><div class="tr" style="position:relative"><div class="fl" style="width:${t/mp*100}%;opacity:.35;position:absolute;inset:0 auto 0 0"></div><div class="fl" style="width:${f/mp*100}%;background:var(--ok);position:absolute;inset:0 auto 0 0"></div></div><b class="mono">${f}/${t}h</b></div>`).join('')}</div></div>
++   <div class="card"><h3>OS por tipo de atendimento</h3><div class="bars">${porTipo.map(([t,n])=>`<div class="b" style="grid-template-columns:190px 1fr 30px"><span class="tx2">${t}</span><div class="tr"><div class="fl" style="width:${n/S.os.length*100}%;background:var(--info)"></div></div><b class="mono">${n}</b></div>`).join('')}</div></div>
++   <div class="card"><h3>Gargalos: tempo parado acumulado</h3>${espera.map(([s,h])=>`<div class="sum"><span>${tagSt(s)}</span><b class="mono">${dur(h)}</b></div>`).join('')}<p class="muted" style="font-size:12.5px">Veículo parado esperando aprovação ou peça é box ocupado sem faturar. Acompanhe isso toda semana.</p></div>
++  </div>`;
++};
++
++/* ============ AÇÕES (delegação) ============ */
++const ACT={
++  reset(){if(MODE==='api')return toast('No modo API os dados vêm do banco MySQL.');dialog('Restaurar dados de exemplo?','<p class="muted">Todos os dados salvos neste navegador serão substituídos.</p>',()=>{S=seed();W=null;save();render();toast('Dados restaurados')},'Restaurar')},
++  openOS(a){openOS(a.dataset.id);if(a.dataset.tab){osTab=a.dataset.tab;drawOS()}},
++  close:closeModal,
++  ovClose(a,e){if(e.target===a)closeModal()},
++  osTab(a){osTab=a.dataset.v;drawOS()},
++  osView(a){osView=a.dataset.v;rerender()},
++  // wizard
++  wGo(a){const i=+a.dataset.i;if(i>W.step){for(let k=W.step;k<i;k++){const e=wValida(k);if(e){toast('⚠️ '+e);W.step=k;return rerender()}}}W.step=i;render()},
++  wNext(){const e=wValida(W.step);if(e)return toast('⚠️ '+e);W.step++;render()},
++  wPrev(){W.step--;render()},
++  wReset(){W=novoDraft();render()},
++  wSave:wSalvar,
++  fuel(a){W.e.combustivel=+a.dataset.v;rerender()},
++  wAddRecl(){W.recl.push({texto:'',sistema:'Motor',quando:'Sempre',sev:'Média',dtc:''});rerender()},
++  wDelRecl(a){W.recl.splice(+a.dataset.i,1);rerender()},
++  ck(a){W.e.checklist[a.dataset.it]=a.dataset.v;rerender()},
++  ckAllOk(){Object.values(CHECK).flat().forEach(i=>W.e.checklist[i]??='OK');rerender()},
++  pneu(a){W.pneuSel=a.dataset.k;rerender();setTimeout(()=>document.querySelector('[data-bind$=".sulco"]')?.focus(),10)},
++  pneuNext(){const ks=[...document.querySelectorAll('.tire')].map(t=>t.dataset.k);const i=ks.indexOf(W.pneuSel);W.pneuSel=ks[(i+1)%ks.length];rerender();setTimeout(()=>document.querySelector('[data-bind$=".sulco"]')?.focus(),10)},
++  avSel(a){W.avSel=a.dataset.v;rerender()},
++  avDel(a){W.e.avarias.splice(+a.dataset.i,1);rerender()},
++  fotoDel(a,e){e.preventDefault();W.e.fotos.splice(+a.dataset.i,1);rerender()},
++  sigClear(){W.e.assinatura=null;rerender()},
++  // OS
++  aprovar(){const o=O(curOS);dialog('Registrar aprovação do orçamento',finp('por','Aprovado por','required placeholder="Nome do responsável"')+fsel('meio','Meio',['WhatsApp','Telefone','E-mail','Presencial (assinado)','Contrato / pré-autorizado']),f=>{o.aprovado={data:now(),por:`${f.por} — ${f.meio}`};log(o,`Orçamento de ${brl(total(o))} aprovado por ${f.por} (${f.meio})`);if(o.status==='Aguardando aprovação'){o.status='Em execução';log(o,'Status: Aguardando aprovação → Em execução')}save();drawOS()},'Aprovar')},
++  addRecl(){const o=O(curOS);dialog('Nova reclamação',`<label class="f" style="margin-bottom:10px">Relato<textarea class="in" name="texto" required></textarea></label>`+fsel('sistema','Sistema',SISTEMAS)+fsel('sev','Severidade',SEVER,'Média')+fsel('quando','Quando ocorre',QUANDO)+finp('dtc','Códigos DTC'),f=>{o.reclamacoes.push({...f,id:uid(),status:'Aberta',causa:'',data:now()});log(o,'Reclamação adicionada: '+f.texto);save();drawOS()})},
++  addServ(){const o=O(curOS);if(finalizada(o))return toast('OS finalizada: não aceita novos itens.');dialog('Lançar serviço',finp('desc','Descrição do serviço','required placeholder="Ex.: Regulagem de válvulas"')+fsel('sistema','Sistema',SISTEMAS)+fsel('mecId','Mecânico',S.mec.map(m=>[m.id,`${m.nome} — ${m.esp} (${brl(m.valorHora)}/h)`]))+finp('horas','Tempo padrão (h)','type="number" step="0.5" value="1" required'),f=>{const h=Number(f.horas);
++    if(MODE==='api'){apiRun(async()=>{const it=await api(`/api/ordens-servico/${apiId(o.id)}/itens`,{method:'POST',body:{descricao:f.desc,valor:+(h*(M(f.mecId).valorHora||150)).toFixed(2),funcionarioId:apiId(f.mecId)}});log(o,`Serviço lançado: ${f.desc} (${h} h)`);saveExtras();(X.os[apiId(o.id)]??={}).itens??={};X.os[apiId(o.id)].itens[it.id]={sistema:f.sistema,horas:h,feito:false};lsSet(XKEY,JSON.stringify(X))},'Serviço lançado na OS');return}
++    o.servicos.push({id:uid(),desc:f.desc,sistema:f.sistema,mecId:f.mecId,horas:h,feito:false});log(o,`Serviço lançado: ${f.desc} (${f.horas} h)`);save();drawOS()})},
++  delServ(a){if(MODE==='api')return toast('A API ainda não permite remover itens.');const o=O(curOS);const s=o.servicos.splice(+a.dataset.i,1)[0];log(o,'Serviço removido: '+s.desc);save();drawOS()},
++  servFeito(a){const o=O(curOS);const s=o.servicos[+a.dataset.i];s.feito=a.checked;log(o,`${s.feito?'Concluído':'Reaberto'}: ${s.desc} — ${M(s.mecId).nome}`);save();drawOS()},
++  addPeca(){const o=O(curOS);if(finalizada(o))return toast('OS finalizada: não aceita novos itens.');if(MODE==='api'&&!S.mec.length)return toast('Cadastre um funcionário antes: a API exige quem lançou o item.');dialog('Lançar peça',fsel('pecaId','Peça',S.pec.map(p=>[p.id,`${p.cod} — ${p.desc} (${p.qtd} em estoque)`]))+finp('qtd','Quantidade','type="number" min="1" value="1" required')+(MODE==='api'?fsel('mecId','Lançado por',S.mec.map(m=>[m.id,m.nome])):''),f=>{const p=P(f.pecaId);const q=Number(f.qtd);if(q>p.qtd)toast(`⚠️ Estoque insuficiente (${p.qtd}). Peça marcada para compra.`);
++    if(MODE==='api'){apiRun(async()=>{await api(`/api/ordens-servico/${apiId(o.id)}/itens`,{method:'POST',body:{descricao:`[Peça] ${q}× ${p.desc} (${p.cod})`,valor:+(q*p.venda).toFixed(2),funcionarioId:apiId(f.mecId)}});p.qtd-=Math.min(q,Math.max(p.qtd,0));log(o,`Peça lançada: ${q}× ${p.desc}`);saveExtras()},'Peça lançada na OS');return}
++    p.qtd-=Math.min(q,Math.max(p.qtd,0));o.pecas.push({pecaId:p.id,qtd:q,valor:p.venda});log(o,`Peça lançada: ${q}× ${p.desc}`);save();drawOS()})},
++  delPeca(a){if(MODE==='api')return toast('A API ainda não permite remover itens.');const o=O(curOS);const it=o.pecas.splice(+a.dataset.i,1)[0];P(it.pecaId).qtd+=it.qtd;log(o,'Peça devolvida ao estoque: '+P(it.pecaId).desc);save();drawOS()},
++  addNota(){const o=O(curOS);const t=$('#notaIn').value.trim();if(!t)return;log(o,'📝 '+t);save();drawOS()},
++  retorno(){const o=O(curOS);dialog('Abrir retorno em garantia',`<p class="muted">Cria uma nova OS do tipo <b>Garantia / Retorno</b> vinculada à OS #${o.num}.</p><label class="f" style="margin-bottom:10px">O que o cliente relatou?<textarea class="in" name="texto" required></textarea></label>`+fsel('sistema','Sistema',SISTEMAS,o.reclamacoes[0]?.sistema)+finp('km','Km atual','type="number" required'),f=>{
++    if(MODE==='api'){let novoId;apiRun(async()=>{const r=await api('/api/ordens-servico',{method:'POST',body:{veiculoId:apiId(o.veiculoId),defeitoRelatado:textoDefeito([{texto:`RETORNO da OS #${o.num}: ${f.texto}`,sistema:f.sistema}])}});novoId=r.id;X.os[r.id]={statusDet:'Aguardando diagnóstico',tipo:'Garantia / Retorno',prioridade:'Alta',box:'Pátio',retornoDe:o.num,entrada:{km:Number(f.km),combustivel:4,checklist:{},pneus:{},avarias:[],fotos:[]},reclamacoes:[{id:uid(),texto:f.texto,sistema:f.sistema,quando:'Sempre',sev:'Alta',dtc:'',status:'Aberta',causa:'',data:now()}],hist:[{d:now(),t:`Retorno em garantia da OS #${o.num}`}],itens:{}};lsSet(XKEY,JSON.stringify(X))},'OS de retorno aberta').then(()=>novoId&&openOS('o'+novoId));return}
++    const n={id:'o'+uid(),num:S.seq++,veiculoId:o.veiculoId,clienteId:o.clienteId,tipo:'Garantia / Retorno',status:'Aguardando diagnóstico',prioridade:'Alta',box:'Pátio',retornoDe:o.num,entrada:{km:Number(f.km),combustivel:4,checklist:{},pneus:{},avarias:[],fotos:[]},abertura:now(),previsao:'',reclamacoes:[{id:uid(),texto:f.texto,sistema:f.sistema,quando:'Sempre',sev:'Alta',dtc:'',status:'Aberta',causa:'',data:now()}],diagnostico:'',servicos:[],pecas:[],aprovado:null,hist:[{d:now(),t:`Retorno em garantia da OS #${o.num}`}]};S.os.push(n);save();openOS(n.id);toast(`OS #${n.num} de retorno aberta`)},'Abrir retorno')},
++  copyOS(){const o=O(curOS);const v=V(o.veiculoId);const t=`OS #${o.num} — ${v.placa} ${v.marca} ${v.modelo}\nCliente: ${C(o.clienteId).nome}\nStatus: ${o.status}\n\nReclamações:\n${o.reclamacoes.map((r,i)=>`${i+1}. ${r.texto}${r.causa?` → ${r.causa}`:''}`).join('\n')}\n\nServiços:\n${o.servicos.map(s=>`- ${s.desc}${s.horas?` (${s.horas}h)`:''} ${brl(vServ(s))}`).join('\n')||'-'}\nPeças:\n${o.pecas.map(p=>`- ${p.qtd}x ${pecaInfo(p).desc} ${brl(p.qtd*p.valor)}`).join('\n')||'-'}\n\nTOTAL: ${brl(total(o))}${o.previsao?`\nPrevisão: ${fdt(o.previsao)}`:''}`;navigator.clipboard.writeText(t).then(()=>toast('📋 Resumo copiado — pronto para colar no WhatsApp'),()=>toast('Não foi possível copiar neste navegador'))},
++  // defeitos
++  novoDefeito(){const ab=abertas();if(!ab.length)return toast('Abra uma OS pela entrada de veículo primeiro.');dialog('Registrar reclamação / defeito',fsel('osId','Vincular à OS',ab.map(o=>[o.id,`#${o.num} — ${V(o.veiculoId).placa} ${V(o.veiculoId).modelo}`]))+`<label class="f" style="margin-bottom:10px">Relato<textarea class="in" name="texto" required></textarea></label>`+fsel('sistema','Sistema',SISTEMAS)+fsel('sev','Severidade',SEVER,'Média')+fsel('quando','Quando ocorre',QUANDO)+finp('dtc','Códigos DTC'),f=>{const o=O(f.osId);o.reclamacoes.push({texto:f.texto,sistema:f.sistema,sev:f.sev,quando:f.quando,dtc:f.dtc,id:uid(),status:'Aberta',causa:'',data:now()});log(o,'Reclamação adicionada: '+f.texto);save();rerender();toast('Reclamação registrada')})},
++  // estoque
++  novaPeca(){dialog('Nova peça',finp('cod','Código','required')+finp('desc','Descrição','required')+finp('apl','Aplicação')+finp('qtd','Quantidade inicial','type="number" value="0"')+finp('min','Estoque mínimo','type="number" value="1"')+finp('custo','Custo (R$)','type="number" step="0.01"')+finp('venda','Venda (R$)','type="number" step="0.01"'),f=>{S.pec.push({id:'p'+uid(),...f,qtd:+f.qtd,min:+f.min,custo:+f.custo,venda:+f.venda});save();rerender();toast('Peça cadastrada')})},
++  entradaPeca(a){const p=P(a.dataset.id);dialog(`Entrada de estoque — ${esc(p.desc)}`,finp('qtd','Quantidade recebida','type="number" min="1" value="1" required')+finp('nf','Nota fiscal / fornecedor'),f=>{p.qtd+=Number(f.qtd);save();rerender();toast(`+${f.qtd} ${esc(p.desc)}`)})},
++  novoCli(){dialog('Novo cliente',finp('nome','Nome / razão social','required')+finp('doc','CNPJ / CPF',MODE==='api'?'required':'')+finp('tel','Telefone')+finp('contato','Contato')+fsel('tipo','Tipo',['Frotista','Autônomo','Locadora','Concessionária (terceirização)'])+finp('prazo','Prazo de pagamento','value="À vista"'),f=>{
++    if(MODE==='api'){apiRun(async()=>{const c=await api('/api/clientes',{method:'POST',body:{nomeOuRazaoSocial:f.nome,cpfOuCnpj:f.doc,telefone:f.tel}});X.cli[c.id]={contato:f.contato,tipo:f.tipo,prazo:f.prazo};lsSet(XKEY,JSON.stringify(X))},'Cliente cadastrado na API');return}
++    S.cli.push({id:'c'+uid(),...f});save();rerender();toast('Cliente cadastrado')})},
++  novoMec(){dialog('Novo funcionário',finp('nome','Nome','required')+finp('cargo','Cargo / especialidade','required placeholder="Mecânico diesel, Eletricista automotivo…"')+finp('valorHora','Valor da hora (R$)','type="number" step="0.01" value="150" required'),f=>{
++    if(MODE==='api'){apiRun(async()=>{const m=await api('/api/funcionarios',{method:'POST',body:{nome:f.nome,cargo:f.cargo}});X.mec[m.id]={valorHora:Number(f.valorHora)};lsSet(XKEY,JSON.stringify(X))},'Funcionário cadastrado na API');return}
++    S.mec.push({id:'m'+uid(),nome:f.nome,esp:f.cargo,valorHora:Number(f.valorHora)});save();rerender();toast('Funcionário cadastrado')})},
++  modo(a){const m=a.dataset.v;if(m===MODE)return;if(m==='demo'){MODE='demo';lsSet('oficina-modo','demo');W=null;boot();return}
++    dialog('Conectar à API do Gerenciador_Oficina',`<p class="muted" style="margin-top:0">Endereço do back-end Spring Boot. Para funcionar, abra este arquivo <b>no seu computador</b> (a página publicada no claude.ai não consegue acessar o localhost) e rode a API com o CORS liberado.</p>`+finp('url','URL da API',`value="${esc(API_URL)}" required`),f=>{API_URL=f.url.trim();lsSet('oficina-api',API_URL);MODE='api';lsSet('oficina-modo','api');W=null;boot()},'Conectar')},
++  reconectar(){boot()},
++  placaLookup(){},
++};
++document.addEventListener('click',e=>{
++  const a=e.target.closest('[data-act]'); if(!a) return;
++  if(a.closest('[data-stop]') && a.dataset.act==='ovClose') return;
++  if(a.dataset.act==='ovClose' && e.target!==a) return;
++  if(a.tagName==='A' && a.getAttribute('href')==='#') e.preventDefault();
++  if(a.type==='checkbox' && a.dataset.act==='servFeito'){ACT.servFeito(a,e);return}
++  if(a.closest('.dlg')) return;
++  ACT[a.dataset.act]?.(a,e);
++});
++// bind de campos do wizard
++document.addEventListener('input',e=>{
++  const el=e.target; if(!el.dataset.bind||!W) return;
++  const val=el.type==='checkbox'?el.checked:el.value;
++  setPath(W,el.dataset.bind,val);
++});
++document.addEventListener('change',e=>{
++  const el=e.target; if(!el.dataset.bind||!W) return;
++  const p=el.dataset.bind;
++  if(p==='v.placa'){
++    const pl=el.value.toUpperCase().replace(/[^A-Z0-9]/g,''); W.v.placa=pl;
++    const ex=S.vei.find(v=>v.placa===pl);
++    if(ex){Object.assign(W.v,{frota:ex.frota,tipo:ex.tipo,marca:ex.marca,modelo:ex.modelo,ano:ex.ano,chassi:ex.chassi});W.clienteId=ex.clienteId}
++    rerender();
++  } else if(p==='clienteId'||p==='e.carreta'||p==='v.tipo'||/\.sulco$/.test(p)||el.tagName==='SELECT'){ if(p==='v.tipo')W.e.pneus={}; rerender(); }
++});
++document.addEventListener('keydown',e=>{if(e.key==='Escape'){const d=document.querySelector('.ov.center');if(d)d.remove();else if(curOS)closeModal()}});
++
++boot();
++</script>
++</body>
++</html>
+diff --git a/src/main/java/gerenciador/oficina/demo/config/CorsConfig.java b/src/main/java/gerenciador/oficina/demo/config/CorsConfig.java
+new file mode 100644
+index 0000000..0257c72
+--- /dev/null
++++ b/src/main/java/gerenciador/oficina/demo/config/CorsConfig.java
+@@ -0,0 +1,22 @@
++package gerenciador.oficina.demo.config;
++
++import org.springframework.context.annotation.Configuration;
++import org.springframework.web.servlet.config.annotation.CorsRegistry;
++import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
++
++/**
++ * Libera a API para ser consumida pelo front-end (navegador, React, Expo).
++ * Sem isto o navegador bloqueia as chamadas feitas de outra origem.
++ * Em produção, troque "*" pelos domínios reais do front.
++ */
++@Configuration
++public class CorsConfig implements WebMvcConfigurer {
++
++    @Override
++    public void addCorsMappings(CorsRegistry registry) {
++        registry.addMapping("/api/**")
++                .allowedOriginPatterns("*")
++                .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
++                .allowedHeaders("*");
++    }
++}
+diff --git a/src/main/java/gerenciador/oficina/demo/controller/OrdemServicoController.java b/src/main/java/gerenciador/oficina/demo/controller/OrdemServicoController.java
+index 9be0108..50be2b8 100644
+--- a/src/main/java/gerenciador/oficina/demo/controller/OrdemServicoController.java
++++ b/src/main/java/gerenciador/oficina/demo/controller/OrdemServicoController.java
+@@ -2,6 +2,7 @@ package gerenciador.oficina.demo.controller;
+ 
+ import gerenciador.oficina.demo.domain.ItemServico;
+ import gerenciador.oficina.demo.domain.OrdemServico;
++import gerenciador.oficina.demo.domain.StatusOS;
+ import gerenciador.oficina.demo.service.OrdemServicoService;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.http.HttpStatus;
+@@ -47,4 +48,21 @@ public class OrdemServicoController {
+     public ResponseEntity<List<OrdemServico>> listar() {
+         return ResponseEntity.ok(service.listarTodas());
+     }
+-}
+\ No newline at end of file
++
++    @GetMapping("/{id}")
++    public ResponseEntity<OrdemServico> buscar(@PathVariable Long id) {
++        return ResponseEntity.ok(service.buscarPorId(id));
++    }
++
++    @GetMapping("/{id}/itens")
++    public ResponseEntity<List<ItemServico>> listarItens(@PathVariable Long id) {
++        return ResponseEntity.ok(service.listarItens(id));
++    }
++
++    // Body: { "status": "AGUARDANDO_PECA" }
++    @PutMapping("/{id}/status")
++    public ResponseEntity<OrdemServico> alterarStatus(@PathVariable Long id, @RequestBody Map<String, Object> payload) {
++        StatusOS status = StatusOS.valueOf(payload.get("status").toString());
++        return ResponseEntity.ok(service.alterarStatus(id, status));
++    }
++}
+diff --git a/src/main/java/gerenciador/oficina/demo/exception/GlobalExceptionHandler.java b/src/main/java/gerenciador/oficina/demo/exception/GlobalExceptionHandler.java
+new file mode 100644
+index 0000000..4a13336
+--- /dev/null
++++ b/src/main/java/gerenciador/oficina/demo/exception/GlobalExceptionHandler.java
+@@ -0,0 +1,44 @@
++package gerenciador.oficina.demo.exception;
++
++import org.springframework.dao.DataIntegrityViolationException;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.MethodArgumentNotValidException;
++import org.springframework.web.bind.annotation.ExceptionHandler;
++import org.springframework.web.bind.annotation.RestControllerAdvice;
++
++import java.time.LocalDateTime;
++import java.util.Map;
++
++/**
++ * Converte exceções em JSON limpo: {"erro": "...", "data": "..."}.
++ * O front-end mostra o campo "erro" direto para o usuário.
++ */
++@RestControllerAdvice
++public class GlobalExceptionHandler {
++
++    @ExceptionHandler(RuntimeException.class)
++    public ResponseEntity<Map<String, Object>> regraDeNegocio(RuntimeException ex) {
++        return corpo(HttpStatus.BAD_REQUEST, ex.getMessage());
++    }
++
++    @ExceptionHandler(DataIntegrityViolationException.class)
++    public ResponseEntity<Map<String, Object>> integridade(DataIntegrityViolationException ex) {
++        return corpo(HttpStatus.CONFLICT, "Registro duplicado ou campo obrigatório ausente.");
++    }
++
++    @ExceptionHandler(MethodArgumentNotValidException.class)
++    public ResponseEntity<Map<String, Object>> validacao(MethodArgumentNotValidException ex) {
++        String msg = ex.getBindingResult().getFieldErrors().stream()
++                .map(e -> e.getField() + ": " + e.getDefaultMessage())
++                .reduce((a, b) -> a + "; " + b)
++                .orElse("Dados inválidos.");
++        return corpo(HttpStatus.BAD_REQUEST, msg);
++    }
++
++    private ResponseEntity<Map<String, Object>> corpo(HttpStatus status, String mensagem) {
++        return ResponseEntity.status(status).body(Map.of(
++                "erro", mensagem == null ? "Erro inesperado." : mensagem,
++                "data", LocalDateTime.now().toString()));
++    }
++}
+diff --git a/src/main/java/gerenciador/oficina/demo/repository/ItemServicoRepository.java b/src/main/java/gerenciador/oficina/demo/repository/ItemServicoRepository.java
+index 2a36f1e..6d5acae 100644
+--- a/src/main/java/gerenciador/oficina/demo/repository/ItemServicoRepository.java
++++ b/src/main/java/gerenciador/oficina/demo/repository/ItemServicoRepository.java
+@@ -4,6 +4,10 @@ import gerenciador.oficina.demo.domain.ItemServico;
+ import org.springframework.data.jpa.repository.JpaRepository;
+ import org.springframework.stereotype.Repository;
+ 
++import java.util.List;
++
+ @Repository
+ public interface ItemServicoRepository extends JpaRepository<ItemServico, Long> {
++    // Itens (peças e mão de obra) de uma OS específica
++    List<ItemServico> findByOrdemServicoId(Long ordemServicoId);
+ }
+diff --git a/src/main/java/gerenciador/oficina/demo/service/OrdemServicoService.java b/src/main/java/gerenciador/oficina/demo/service/OrdemServicoService.java
+index 65a4fb4..4242a10 100644
+--- a/src/main/java/gerenciador/oficina/demo/service/OrdemServicoService.java
++++ b/src/main/java/gerenciador/oficina/demo/service/OrdemServicoService.java
+@@ -66,11 +66,37 @@ public class OrdemServicoService {
+         OrdemServico os = osRepository.findById(osId)
+                 .orElseThrow(() -> new RuntimeException("OS não encontrada!"));
+ 
++        if (os.getStatus() == StatusOS.FINALIZADA) {
++            throw new RuntimeException("Esta OS já está finalizada.");
++        }
++
+         os.setStatus(StatusOS.FINALIZADA);
+         os.setDataSaida(LocalDateTime.now());
+         return osRepository.save(os);
+     }
+ 
++    public OrdemServico buscarPorId(Long osId) {
++        return osRepository.findById(osId)
++                .orElseThrow(() -> new RuntimeException("OS não encontrada!"));
++    }
++
++    public List<ItemServico> listarItens(Long osId) {
++        buscarPorId(osId); // garante que a OS existe
++        return itemRepository.findByOrdemServicoId(osId);
++    }
++
++    public OrdemServico alterarStatus(Long osId, StatusOS novoStatus) {
++        OrdemServico os = buscarPorId(osId);
++        if (os.getStatus() == StatusOS.FINALIZADA) {
++            throw new RuntimeException("Esta OS já foi finalizada e não pode mudar de status.");
++        }
++        if (novoStatus == StatusOS.FINALIZADA) {
++            return finalizarOS(osId); // finalizar também registra a data de saída
++        }
++        os.setStatus(novoStatus);
++        return osRepository.save(os);
++    }
++
+     public List<OrdemServico> listarTodas() {
+         return osRepository.findAll();
+     }
+diff --git a/src/main/java/gerenciador/oficina/demo/teste.http b/src/main/java/gerenciador/oficina/demo/teste.http
+index b91ba5a..282dd30 100644
+--- a/src/main/java/gerenciador/oficina/demo/teste.http
++++ b/src/main/java/gerenciador/oficina/demo/teste.http
+@@ -46,4 +46,18 @@ Content-Type: application/json
+   "descricao": "Reparo no chicote dos faróis",
+   "valor": 150.00,
+   "funcionarioId": 1
+-}
+\ No newline at end of file
++}
++
++### 6. Listar os itens (peças e mão de obra) da OS 1
++GET http://localhost:8080/api/ordens-servico/1/itens
++
++### 7. Mudar o status da OS 1 (ABERTA, EM_ANDAMENTO, AGUARDANDO_PECA)
++PUT http://localhost:8080/api/ordens-servico/1/status
++Content-Type: application/json
++
++{
++  "status": "AGUARDANDO_PECA"
++}
++
++### 8. Buscar uma OS pelo id
++GET http://localhost:8080/api/ordens-servico/1
+-- 
+2.43.0
+
